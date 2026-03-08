@@ -24,6 +24,7 @@ func TestCreateIssueSequenceAndExport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	second, err := s.CreateIssue(ctx, store.CreateIssueInput{
 		Title:       "second",
 		Description: "body",
@@ -37,6 +38,7 @@ func TestCreateIssueSequenceAndExport(t *testing.T) {
 	if first.ID != "tk-1" || second.ID != "tk-2" {
 		t.Fatalf("unexpected issue ids: %s %s", first.ID, second.ID)
 	}
+
 	if len(first.Labels) != 2 || first.Labels[0] != "one" || first.Labels[1] != "two" {
 		t.Fatalf("unexpected labels: %#v", first.Labels)
 	}
@@ -45,12 +47,15 @@ func TestCreateIssueSequenceAndExport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if len(exported.Issues) != 2 {
 		t.Fatalf("expected 2 issues in export, got %d", len(exported.Issues))
 	}
+
 	if len(exported.Events) != 2 {
 		t.Fatalf("expected 2 create events, got %d", len(exported.Events))
 	}
+
 	if exported.Metadata["schema_version"] != "1" {
 		t.Fatalf("unexpected schema version: %#v", exported.Metadata["schema_version"])
 	}
@@ -70,6 +75,7 @@ func TestReadyFilteringAndCloseUnblocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	blocked, err := s.CreateIssue(ctx, store.CreateIssueInput{
 		Title:       "blocked",
 		Description: "body",
@@ -80,7 +86,9 @@ func TestReadyFilteringAndCloseUnblocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	future := time.Now().UTC().Add(24 * time.Hour)
+
 	_, err = s.CreateIssue(ctx, store.CreateIssueInput{
 		Title:         "deferred",
 		Description:   "body",
@@ -91,6 +99,7 @@ func TestReadyFilteringAndCloseUnblocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	claimed, err := s.CreateIssue(ctx, store.CreateIssueInput{
 		Title:       "claimed",
 		Description: "body",
@@ -100,6 +109,7 @@ func TestReadyFilteringAndCloseUnblocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	_, err = s.UpdateIssue(ctx, claimed.ID, store.UpdateIssueInput{Claim: true}, "alice")
 	if err != nil {
 		t.Fatal(err)
@@ -109,6 +119,7 @@ func TestReadyFilteringAndCloseUnblocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if len(ready) != 1 || ready[0].ID != blocker.ID {
 		t.Fatalf("unexpected ready set before close: %#v", ready)
 	}
@@ -121,6 +132,7 @@ func TestReadyFilteringAndCloseUnblocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if len(ready) != 1 || ready[0].ID != blocked.ID {
 		t.Fatalf("unexpected ready set after close: %#v", ready)
 	}
@@ -140,6 +152,7 @@ func TestDependencyCycleRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	b, err := s.CreateIssue(ctx, store.CreateIssueInput{
 		Title:       "B",
 		Description: "body",
@@ -153,6 +166,7 @@ func TestDependencyCycleRejected(t *testing.T) {
 	if _, err := s.AddDependency(ctx, b.ID, a.ID, "alice"); err != nil {
 		t.Fatal(err)
 	}
+
 	if _, err := s.AddDependency(ctx, a.ID, b.ID, "alice"); err == nil {
 		t.Fatal("expected cycle rejection")
 	}
@@ -172,13 +186,16 @@ func TestCommentsLabelsAndEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if _, err := s.AddComment(ctx, issue.ID, "note", "alice"); err != nil {
 		t.Fatal(err)
 	}
+
 	labels, err := s.AddLabels(ctx, issue.ID, []string{"backend", "urgent"}, "alice")
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if len(labels) != 2 {
 		t.Fatalf("expected labels, got %#v", labels)
 	}
@@ -187,6 +204,7 @@ func TestCommentsLabelsAndEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if len(comments) != 1 || comments[0].Body != "note" {
 		t.Fatalf("unexpected comments: %#v", comments)
 	}
@@ -195,9 +213,11 @@ func TestCommentsLabelsAndEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if len(exported.Comments) != 1 {
 		t.Fatalf("expected 1 comment, got %d", len(exported.Comments))
 	}
+
 	if len(exported.Events) != 3 {
 		t.Fatalf("expected create/comment/labels events, got %d", len(exported.Events))
 	}

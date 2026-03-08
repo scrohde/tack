@@ -24,6 +24,8 @@ type Store struct {
 }
 
 type CreateIssueInput struct {
+	DeferredUntil   *time.Time
+	EstimateMinutes *int
 	Title           string
 	Description     string
 	Type            string
@@ -31,8 +33,6 @@ type CreateIssueInput struct {
 	ParentID        string
 	DependsOn       []string
 	Labels          []string
-	DeferredUntil   *time.Time
-	EstimateMinutes *int
 }
 
 type UpdateIssueInput struct {
@@ -44,8 +44,8 @@ type UpdateIssueInput struct {
 	Assignee           *string
 	ParentID           *string
 	DeferredUntil      *time.Time
-	HasDeferredUntil   bool
 	EstimateMinutes    *int
+	HasDeferredUntil   bool
 	HasEstimateMinutes bool
 	Claim              bool
 }
@@ -62,16 +62,21 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
+
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
 	}
+
 	db.SetMaxOpenConns(1)
+
 	s := &Store{db: db, path: path}
 	if err := s.migrate(context.Background()); err != nil {
 		db.Close()
+
 		return nil, err
 	}
+
 	return s, nil
 }
 
@@ -145,6 +150,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -154,13 +160,16 @@ func (s *Store) CreateIssue(ctx context.Context, input CreateIssueInput, actor s
 	input.Type = strings.ToLower(strings.TrimSpace(input.Type))
 	input.Priority = strings.ToLower(strings.TrimSpace(input.Priority))
 	input.ParentID = strings.TrimSpace(input.ParentID)
+
 	input.Labels = issues.NormalizeLabels(input.Labels)
 	if input.Title == "" {
-		return issues.Issue{}, fmt.Errorf("title is required")
+		return issues.Issue{}, errors.New("title is required")
 	}
+
 	if !issues.IsValidType(input.Type) {
 		return issues.Issue{}, fmt.Errorf("invalid type %q", input.Type)
 	}
+
 	if !issues.IsValidPriority(input.Priority) {
 		return issues.Issue{}, fmt.Errorf("invalid priority %q", input.Priority)
 	}
@@ -172,12 +181,15 @@ func (s *Store) CreateIssue(ctx context.Context, input CreateIssueInput, actor s
 	defer tx.Rollback()
 
 	if input.ParentID != "" {
-		if err := ensureIssueExists(ctx, tx, input.ParentID); err != nil {
+		err := ensureIssueExists(ctx, tx, input.ParentID)
+		if err != nil {
 			return issues.Issue{}, err
 		}
 	}
+
 	for _, blocker := range input.DependsOn {
-		if err := ensureIssueExists(ctx, tx, blocker); err != nil {
+		err := ensureIssueExists(ctx, tx, blocker)
+		if err != nil {
 			return issues.Issue{}, err
 		}
 	}
@@ -186,6 +198,7 @@ func (s *Store) CreateIssue(ctx context.Context, input CreateIssueInput, actor s
 	if err != nil {
 		return issues.Issue{}, err
 	}
+
 	id := fmt.Sprintf("tk-%d", sequence)
 	now := time.Now().UTC()
 
@@ -204,14 +217,18 @@ func (s *Store) CreateIssue(ctx context.Context, input CreateIssueInput, actor s
 	if err := syncParentLink(ctx, tx, id, input.ParentID, now); err != nil {
 		return issues.Issue{}, err
 	}
+
 	for _, blocker := range input.DependsOn {
-		if err := addDependencyTx(ctx, tx, id, blocker, now); err != nil {
+		err := addDependencyTx(ctx, tx, id, blocker, now)
+		if err != nil {
 			return issues.Issue{}, err
 		}
 	}
+
 	if err := addLabelsTx(ctx, tx, id, input.Labels, now); err != nil {
 		return issues.Issue{}, err
 	}
+
 	if err := appendEventTx(ctx, tx, id, actor, "issue_created", map[string]any{
 		"title":      input.Title,
 		"type":       input.Type,
@@ -226,6 +243,7 @@ func (s *Store) CreateIssue(ctx context.Context, input CreateIssueInput, actor s
 	if err := tx.Commit(); err != nil {
 		return issues.Issue{}, err
 	}
+
 	return s.GetIssue(ctx, id)
 }
 
@@ -235,18 +253,23 @@ func (s *Store) GetIssue(ctx context.Context, id string) (issues.Issue, error) {
 		       created_at, updated_at, closed_at, COALESCE(parent_id, ''), deferred_until, estimate_minutes
 		FROM issues WHERE id = ?
 	`, strings.TrimSpace(id))
+
 	issue, err := scanIssue(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return issues.Issue{}, fmt.Errorf("issue %s not found", id)
 		}
+
 		return issues.Issue{}, err
 	}
+
 	labels, err := s.ListLabels(ctx, id)
 	if err != nil {
 		return issues.Issue{}, err
 	}
+
 	issue.Labels = labels
+
 	return issue, nil
 }
 
@@ -256,30 +279,40 @@ func (s *Store) ListIssues(ctx context.Context, filter ListFilter) ([]issues.Iss
 		       i.created_at, i.updated_at, i.closed_at, COALESCE(i.parent_id, ''), i.deferred_until, i.estimate_minutes
 		FROM issues i
 	`
-	var where []string
-	var args []any
+
+	var (
+		where []string
+		args  []any
+	)
+
 	if filter.Status != "" {
 		where = append(where, "i.status = ?")
 		args = append(args, filter.Status)
 	}
+
 	if filter.Assignee != "" {
 		where = append(where, "COALESCE(i.assignee, '') = ?")
 		args = append(args, filter.Assignee)
 	}
+
 	if filter.Type != "" {
 		where = append(where, "i.type = ?")
 		args = append(args, filter.Type)
 	}
+
 	if filter.Label != "" {
 		where = append(where, "EXISTS (SELECT 1 FROM issue_labels l WHERE l.issue_id = i.id AND l.label = ?)")
 		args = append(args, strings.ToLower(filter.Label))
 	}
+
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
+
 	query += " ORDER BY i.sequence ASC"
 	if filter.Limit > 0 {
 		query += " LIMIT ?"
+
 		args = append(args, filter.Limit)
 	}
 
@@ -288,6 +321,7 @@ func (s *Store) ListIssues(ctx context.Context, filter ListFilter) ([]issues.Iss
 		return nil, err
 	}
 	defer rows.Close()
+
 	return scanIssues(rows, s)
 }
 
@@ -309,28 +343,38 @@ func (s *Store) ReadyIssues(ctx context.Context, filter ListFilter) ([]issues.Is
 		  )
 	`
 	args := []any{issues.StatusOpen, time.Now().UTC().Format(time.RFC3339Nano), issues.StatusClosed}
+
 	if filter.Assignee != "" {
 		query += " AND COALESCE(i.assignee, '') = ?"
+
 		args = append(args, filter.Assignee)
 	}
+
 	if filter.Type != "" {
 		query += " AND i.type = ?"
+
 		args = append(args, filter.Type)
 	}
+
 	if filter.Label != "" {
 		query += " AND EXISTS (SELECT 1 FROM issue_labels l WHERE l.issue_id = i.id AND l.label = ?)"
+
 		args = append(args, strings.ToLower(filter.Label))
 	}
+
 	query += " ORDER BY i.sequence ASC"
 	if filter.Limit > 0 {
 		query += " LIMIT ?"
+
 		args = append(args, filter.Limit)
 	}
+
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+
 	return scanIssues(rows, s)
 }
 
@@ -347,31 +391,38 @@ func (s *Store) UpdateIssue(ctx context.Context, id string, input UpdateIssueInp
 	}
 
 	changed := map[string]any{}
+
 	if input.Title != nil {
 		v := strings.TrimSpace(*input.Title)
 		if v == "" {
-			return issues.Issue{}, fmt.Errorf("title cannot be empty")
+			return issues.Issue{}, errors.New("title cannot be empty")
 		}
+
 		current.Title = v
 		changed["title"] = v
 	}
+
 	if input.Description != nil {
 		current.Description = strings.TrimSpace(*input.Description)
 		changed["description"] = current.Description
 	}
+
 	if input.Type != nil {
 		v := strings.ToLower(strings.TrimSpace(*input.Type))
 		if !issues.IsValidType(v) {
 			return issues.Issue{}, fmt.Errorf("invalid type %q", v)
 		}
+
 		current.Type = v
 		changed["type"] = v
 	}
+
 	if input.Status != nil {
 		v := strings.ToLower(strings.TrimSpace(*input.Status))
 		if !issues.IsValidStatus(v) {
 			return issues.Issue{}, fmt.Errorf("invalid status %q", v)
 		}
+
 		current.Status = v
 		if v == issues.StatusClosed {
 			now := time.Now().UTC()
@@ -379,64 +430,81 @@ func (s *Store) UpdateIssue(ctx context.Context, id string, input UpdateIssueInp
 		} else {
 			current.ClosedAt = nil
 		}
+
 		changed["status"] = v
 	}
+
 	if input.Priority != nil {
 		v := strings.ToLower(strings.TrimSpace(*input.Priority))
 		if !issues.IsValidPriority(v) {
 			return issues.Issue{}, fmt.Errorf("invalid priority %q", v)
 		}
+
 		current.Priority = v
 		changed["priority"] = v
 	}
+
 	if input.Assignee != nil {
 		current.Assignee = strings.TrimSpace(*input.Assignee)
 		changed["assignee"] = current.Assignee
 	}
+
 	if input.ParentID != nil {
 		parentID := strings.TrimSpace(*input.ParentID)
 		if parentID == id {
-			return issues.Issue{}, fmt.Errorf("issue cannot be its own parent")
+			return issues.Issue{}, errors.New("issue cannot be its own parent")
 		}
+
 		if parentID != "" {
-			if err := ensureIssueExists(ctx, tx, parentID); err != nil {
+			err := ensureIssueExists(ctx, tx, parentID)
+			if err != nil {
 				return issues.Issue{}, err
 			}
 		}
+
 		current.ParentID = parentID
 		changed["parent_id"] = parentID
 	}
+
 	if input.HasDeferredUntil {
 		current.DeferredUntil = input.DeferredUntil
 		changed["deferred_until"] = input.DeferredUntil
 	}
+
 	if input.HasEstimateMinutes {
 		current.EstimateMinutes = input.EstimateMinutes
 		changed["estimate_minutes"] = input.EstimateMinutes
 	}
+
 	if input.Claim {
 		if strings.TrimSpace(actor) == "" {
-			return issues.Issue{}, fmt.Errorf("claim requires an actor")
+			return issues.Issue{}, errors.New("claim requires an actor")
 		}
+
 		if current.Status == issues.StatusClosed {
-			return issues.Issue{}, fmt.Errorf("cannot claim closed issue")
+			return issues.Issue{}, errors.New("cannot claim closed issue")
 		}
+
 		if current.Assignee != "" && current.Assignee != actor {
 			return issues.Issue{}, fmt.Errorf("issue %s is already claimed by %s", id, current.Assignee)
 		}
+
 		current.Assignee = actor
 		if current.Status == issues.StatusOpen {
 			current.Status = issues.StatusInProgress
 		}
+
 		changed["claim"] = true
 		changed["assignee"] = current.Assignee
 		changed["status"] = current.Status
 	}
+
 	if len(changed) == 0 {
-		return issues.Issue{}, fmt.Errorf("no changes requested")
+		return issues.Issue{}, errors.New("no changes requested")
 	}
 
 	now := time.Now().UTC()
+
 	_, err = tx.ExecContext(ctx, `
 		UPDATE issues
 		SET title = ?, description = ?, type = ?, status = ?, priority = ?, assignee = ?,
@@ -448,17 +516,22 @@ func (s *Store) UpdateIssue(ctx context.Context, id string, input UpdateIssueInp
 	if err != nil {
 		return issues.Issue{}, err
 	}
+
 	if input.ParentID != nil {
-		if err := syncParentLink(ctx, tx, id, current.ParentID, now); err != nil {
+		err := syncParentLink(ctx, tx, id, current.ParentID, now)
+		if err != nil {
 			return issues.Issue{}, err
 		}
 	}
+
 	if err := appendEventTx(ctx, tx, id, actor, "issue_updated", changed); err != nil {
 		return issues.Issue{}, err
 	}
+
 	if err := tx.Commit(); err != nil {
 		return issues.Issue{}, err
 	}
+
 	return s.GetIssue(ctx, id)
 }
 
@@ -481,7 +554,9 @@ func (s *Store) setClosedState(ctx context.Context, id string, closed bool, reas
 	if err != nil {
 		return issues.Issue{}, err
 	}
+
 	now := time.Now().UTC()
+
 	if closed {
 		issue.Status = issues.StatusClosed
 		issue.ClosedAt = &now
@@ -489,55 +564,68 @@ func (s *Store) setClosedState(ctx context.Context, id string, closed bool, reas
 		issue.Status = issues.StatusOpen
 		issue.ClosedAt = nil
 	}
+
 	_, err = tx.ExecContext(ctx, `
 		UPDATE issues SET status = ?, updated_at = ?, closed_at = ? WHERE id = ?
 	`, issue.Status, now.Format(time.RFC3339Nano), nullableTime(issue.ClosedAt), id)
 	if err != nil {
 		return issues.Issue{}, err
 	}
+
 	eventType := "issue_reopened"
 	if closed {
 		eventType = "issue_closed"
 	}
+
 	if err := appendEventTx(ctx, tx, id, actor, eventType, map[string]any{"reason": strings.TrimSpace(reason)}); err != nil {
 		return issues.Issue{}, err
 	}
+
 	if err := tx.Commit(); err != nil {
 		return issues.Issue{}, err
 	}
+
 	return s.GetIssue(ctx, id)
 }
 
 func (s *Store) AddComment(ctx context.Context, id, body, actor string) (issues.Comment, error) {
 	body = strings.TrimSpace(body)
 	if body == "" {
-		return issues.Comment{}, fmt.Errorf("comment body is required")
+		return issues.Comment{}, errors.New("comment body is required")
 	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return issues.Comment{}, err
 	}
 	defer tx.Rollback()
+
 	if err := ensureIssueExists(ctx, tx, id); err != nil {
 		return issues.Comment{}, err
 	}
+
 	now := time.Now().UTC()
+
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO issue_comments(issue_id, body, author, created_at) VALUES (?, ?, ?, ?)
 	`, id, body, actor, now.Format(time.RFC3339Nano))
 	if err != nil {
 		return issues.Comment{}, err
 	}
+
 	if err := appendEventTx(ctx, tx, id, actor, "comment_added", map[string]any{"body": body}); err != nil {
 		return issues.Comment{}, err
 	}
+
 	if err := tx.Commit(); err != nil {
 		return issues.Comment{}, err
 	}
+
 	commentID, err := result.LastInsertId()
 	if err != nil {
 		return issues.Comment{}, err
 	}
+
 	return issues.Comment{ID: commentID, IssueID: id, Body: body, Author: actor, CreatedAt: now}, nil
 }
 
@@ -545,6 +633,7 @@ func (s *Store) ListComments(ctx context.Context, id string) ([]issues.Comment, 
 	if _, err := s.GetIssue(ctx, id); err != nil {
 		return nil, err
 	}
+
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, issue_id, body, author, created_at
 		FROM issue_comments
@@ -555,19 +644,28 @@ func (s *Store) ListComments(ctx context.Context, id string) ([]issues.Comment, 
 		return nil, err
 	}
 	defer rows.Close()
+
 	var comments []issues.Comment
+
 	for rows.Next() {
-		var c issues.Comment
-		var created string
-		if err := rows.Scan(&c.ID, &c.IssueID, &c.Body, &c.Author, &created); err != nil {
+		var (
+			c       issues.Comment
+			created string
+		)
+
+		err := rows.Scan(&c.ID, &c.IssueID, &c.Body, &c.Author, &created)
+		if err != nil {
 			return nil, err
 		}
+
 		c.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
 		if err != nil {
 			return nil, err
 		}
+
 		comments = append(comments, c)
 	}
+
 	return comments, rows.Err()
 }
 
@@ -577,20 +675,25 @@ func (s *Store) AddDependency(ctx context.Context, blockedID, blockerID, actor s
 		return issues.Link{}, err
 	}
 	defer tx.Rollback()
+
 	now := time.Now().UTC()
+
 	link, err := addDependencyTxWithLink(ctx, tx, blockedID, blockerID, now)
 	if err != nil {
 		return issues.Link{}, err
 	}
+
 	if err := appendEventTx(ctx, tx, blockedID, actor, "dependency_added", map[string]any{
 		"blocked_id": blockedID,
 		"blocker_id": blockerID,
 	}); err != nil {
 		return issues.Link{}, err
 	}
+
 	if err := tx.Commit(); err != nil {
 		return issues.Link{}, err
 	}
+
 	return link, nil
 }
 
@@ -600,23 +703,28 @@ func (s *Store) RemoveDependency(ctx context.Context, blockedID, blockerID, acto
 		return err
 	}
 	defer tx.Rollback()
+
 	if err := ensureIssueExists(ctx, tx, blockedID); err != nil {
 		return err
 	}
+
 	if err := ensureIssueExists(ctx, tx, blockerID); err != nil {
 		return err
 	}
+
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM issue_links WHERE kind = 'blocks' AND source_id = ? AND target_id = ?
 	`, blockerID, blockedID); err != nil {
 		return err
 	}
+
 	if err := appendEventTx(ctx, tx, blockedID, actor, "dependency_removed", map[string]any{
 		"blocked_id": blockedID,
 		"blocker_id": blockerID,
 	}); err != nil {
 		return err
 	}
+
 	return tx.Commit()
 }
 
@@ -624,87 +732,109 @@ func (s *Store) ListDependencies(ctx context.Context, id string) (issues.Depende
 	if _, err := s.GetIssue(ctx, id); err != nil {
 		return issues.DependencyList{}, err
 	}
+
 	blockedBy, err := s.listLinks(ctx, `SELECT id, source_id, target_id, kind, created_at FROM issue_links WHERE kind = 'blocks' AND target_id = ? ORDER BY id`, id)
 	if err != nil {
 		return issues.DependencyList{}, err
 	}
+
 	blocks, err := s.listLinks(ctx, `SELECT id, source_id, target_id, kind, created_at FROM issue_links WHERE kind = 'blocks' AND source_id = ? ORDER BY id`, id)
 	if err != nil {
 		return issues.DependencyList{}, err
 	}
+
 	return issues.DependencyList{IssueID: id, BlockedBy: blockedBy, Blocks: blocks}, nil
 }
 
 func (s *Store) AddLabels(ctx context.Context, id string, labels []string, actor string) ([]string, error) {
 	labels = issues.NormalizeLabels(labels)
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
+
 	if err := ensureIssueExists(ctx, tx, id); err != nil {
 		return nil, err
 	}
+
 	now := time.Now().UTC()
 	if err := addLabelsTx(ctx, tx, id, labels, now); err != nil {
 		return nil, err
 	}
+
 	if err := appendEventTx(ctx, tx, id, actor, "labels_added", map[string]any{"labels": labels}); err != nil {
 		return nil, err
 	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+
 	return s.ListLabels(ctx, id)
 }
 
 func (s *Store) RemoveLabels(ctx context.Context, id string, labels []string, actor string) ([]string, error) {
 	labels = issues.NormalizeLabels(labels)
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
+
 	if err := ensureIssueExists(ctx, tx, id); err != nil {
 		return nil, err
 	}
+
 	for _, label := range labels {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM issue_labels WHERE issue_id = ? AND label = ?`, id, label); err != nil {
 			return nil, err
 		}
 	}
+
 	if err := appendEventTx(ctx, tx, id, actor, "labels_removed", map[string]any{"labels": labels}); err != nil {
 		return nil, err
 	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+
 	return s.ListLabels(ctx, id)
 }
 
 func (s *Store) ReplaceLabels(ctx context.Context, id string, labels []string, actor string) ([]string, error) {
 	labels = issues.NormalizeLabels(labels)
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
+
 	if err := ensureIssueExists(ctx, tx, id); err != nil {
 		return nil, err
 	}
+
 	if _, err := tx.ExecContext(ctx, `DELETE FROM issue_labels WHERE issue_id = ?`, id); err != nil {
 		return nil, err
 	}
+
 	now := time.Now().UTC()
 	if err := addLabelsTx(ctx, tx, id, labels, now); err != nil {
 		return nil, err
 	}
+
 	if err := appendEventTx(ctx, tx, id, actor, "labels_replaced", map[string]any{"labels": labels}); err != nil {
 		return nil, err
 	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+
 	return s.ListLabels(ctx, id)
 }
 
@@ -714,14 +844,20 @@ func (s *Store) ListLabels(ctx context.Context, id string) ([]string, error) {
 		return nil, err
 	}
 	defer rows.Close()
+
 	var labels []string
+
 	for rows.Next() {
 		var label string
-		if err := rows.Scan(&label); err != nil {
+
+		err := rows.Scan(&label)
+		if err != nil {
 			return nil, err
 		}
+
 		labels = append(labels, label)
 	}
+
 	return labels, rows.Err()
 }
 
@@ -730,26 +866,36 @@ func (s *Store) Export(ctx context.Context) (issues.Export, error) {
 	if err != nil {
 		return issues.Export{}, err
 	}
+
 	links, err := s.listLinks(ctx, `SELECT id, source_id, target_id, kind, created_at FROM issue_links ORDER BY id`)
 	if err != nil {
 		return issues.Export{}, err
 	}
+
 	commentsRows, err := s.db.QueryContext(ctx, `SELECT id, issue_id, body, author, created_at FROM issue_comments ORDER BY id`)
 	if err != nil {
 		return issues.Export{}, err
 	}
 	defer commentsRows.Close()
+
 	var comments []issues.Comment
+
 	for commentsRows.Next() {
-		var c issues.Comment
-		var created string
-		if err := commentsRows.Scan(&c.ID, &c.IssueID, &c.Body, &c.Author, &created); err != nil {
+		var (
+			c       issues.Comment
+			created string
+		)
+
+		err := commentsRows.Scan(&c.ID, &c.IssueID, &c.Body, &c.Author, &created)
+		if err != nil {
 			return issues.Export{}, err
 		}
+
 		c.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
 		if err != nil {
 			return issues.Export{}, err
 		}
+
 		comments = append(comments, c)
 	}
 
@@ -758,17 +904,25 @@ func (s *Store) Export(ctx context.Context) (issues.Export, error) {
 		return issues.Export{}, err
 	}
 	defer eventRows.Close()
+
 	var events []issues.Event
+
 	for eventRows.Next() {
-		var e issues.Event
-		var created string
-		if err := eventRows.Scan(&e.ID, &e.IssueID, &e.Actor, &e.EventType, &e.Payload, &created); err != nil {
+		var (
+			e       issues.Event
+			created string
+		)
+
+		err := eventRows.Scan(&e.ID, &e.IssueID, &e.Actor, &e.EventType, &e.Payload, &created)
+		if err != nil {
 			return issues.Export{}, err
 		}
+
 		e.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
 		if err != nil {
 			return issues.Export{}, err
 		}
+
 		events = append(events, e)
 	}
 
@@ -777,14 +931,20 @@ func (s *Store) Export(ctx context.Context) (issues.Export, error) {
 		return issues.Export{}, err
 	}
 	defer metaRows.Close()
+
 	meta := make(map[string]any)
+
 	for metaRows.Next() {
 		var key, value string
-		if err := metaRows.Scan(&key, &value); err != nil {
+
+		err := metaRows.Scan(&key, &value)
+		if err != nil {
 			return issues.Export{}, err
 		}
+
 		meta[key] = value
 	}
+
 	meta["db_path"] = s.path
 
 	return issues.Export{
@@ -802,46 +962,62 @@ func (s *Store) listLinks(ctx context.Context, query string, args ...any) ([]iss
 		return nil, err
 	}
 	defer rows.Close()
+
 	var links []issues.Link
+
 	for rows.Next() {
-		var link issues.Link
-		var created string
-		if err := rows.Scan(&link.ID, &link.SourceID, &link.TargetID, &link.Kind, &created); err != nil {
+		var (
+			link    issues.Link
+			created string
+		)
+
+		err := rows.Scan(&link.ID, &link.SourceID, &link.TargetID, &link.Kind, &created)
+		if err != nil {
 			return nil, err
 		}
+
 		link.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
 		if err != nil {
 			return nil, err
 		}
+
 		links = append(links, link)
 	}
+
 	return links, rows.Err()
 }
 
 func addDependencyTx(ctx context.Context, tx *sql.Tx, blockedID, blockerID string, now time.Time) error {
 	_, err := addDependencyTxWithLink(ctx, tx, blockedID, blockerID, now)
+
 	return err
 }
 
 func addDependencyTxWithLink(ctx context.Context, tx *sql.Tx, blockedID, blockerID string, now time.Time) (issues.Link, error) {
 	blockedID = strings.TrimSpace(blockedID)
+
 	blockerID = strings.TrimSpace(blockerID)
 	if blockedID == blockerID {
-		return issues.Link{}, fmt.Errorf("an issue cannot depend on itself")
+		return issues.Link{}, errors.New("an issue cannot depend on itself")
 	}
+
 	if err := ensureIssueExists(ctx, tx, blockedID); err != nil {
 		return issues.Link{}, err
 	}
+
 	if err := ensureIssueExists(ctx, tx, blockerID); err != nil {
 		return issues.Link{}, err
 	}
+
 	hasCycle, err := dependencyPathExists(ctx, tx, blockedID, blockerID)
 	if err != nil {
 		return issues.Link{}, err
 	}
+
 	if hasCycle {
 		return issues.Link{}, fmt.Errorf("dependency cycle detected between %s and %s", blockedID, blockerID)
 	}
+
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO issue_links(source_id, target_id, kind, created_at)
 		VALUES (?, ?, 'blocks', ?)
@@ -850,7 +1026,9 @@ func addDependencyTxWithLink(ctx context.Context, tx *sql.Tx, blockedID, blocker
 	if err != nil {
 		return issues.Link{}, err
 	}
+
 	id, _ := result.LastInsertId()
+
 	return issues.Link{
 		ID:        id,
 		SourceID:  blockerID,
@@ -874,10 +1052,14 @@ func dependencyPathExists(ctx context.Context, tx *sql.Tx, startBlocked, desired
 		)
 		SELECT EXISTS(SELECT 1 FROM reach WHERE target_id = ?)
 	`, startBlocked, desiredBlocker)
+
 	var exists bool
-	if err := row.Scan(&exists); err != nil {
+
+	err := row.Scan(&exists)
+	if err != nil {
 		return false, err
 	}
+
 	return exists, nil
 }
 
@@ -891,6 +1073,7 @@ func addLabelsTx(ctx context.Context, tx *sql.Tx, id string, labels []string, no
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -900,13 +1083,16 @@ func syncParentLink(ctx context.Context, tx *sql.Tx, childID, parentID string, n
 	`, childID); err != nil {
 		return err
 	}
+
 	if parentID == "" {
 		return nil
 	}
+
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO issue_links(source_id, target_id, kind, created_at)
 		VALUES (?, ?, 'parent_child', ?)
 	`, parentID, childID, now.Format(time.RFC3339Nano))
+
 	return err
 }
 
@@ -914,33 +1100,43 @@ func appendEventTx(ctx context.Context, tx *sql.Tx, issueID, actor, eventType st
 	if strings.TrimSpace(actor) == "" {
 		actor = "unknown"
 	}
+
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
+
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO issue_events(issue_id, actor, event_type, payload_json, created_at)
 		VALUES (?, ?, ?, ?, ?)
 	`, nullableString(issueID), actor, eventType, string(data), time.Now().UTC().Format(time.RFC3339Nano))
+
 	return err
 }
 
 func ensureIssueExists(ctx context.Context, tx *sql.Tx, id string) error {
 	var exists bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM issues WHERE id = ?)`, strings.TrimSpace(id)).Scan(&exists); err != nil {
+
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM issues WHERE id = ?)`, strings.TrimSpace(id)).Scan(&exists)
+	if err != nil {
 		return err
 	}
+
 	if !exists {
 		return fmt.Errorf("issue %s not found", id)
 	}
+
 	return nil
 }
 
 func nextSequence(ctx context.Context, tx *sql.Tx) (int64, error) {
 	var next int64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence), 0) + 1 FROM issues`).Scan(&next); err != nil {
+
+	err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence), 0) + 1 FROM issues`).Scan(&next)
+	if err != nil {
 		return 0, err
 	}
+
 	return next, nil
 }
 
@@ -950,13 +1146,16 @@ func getIssueTx(ctx context.Context, tx *sql.Tx, id string) (issues.Issue, error
 		       created_at, updated_at, closed_at, COALESCE(parent_id, ''), deferred_until, estimate_minutes
 		FROM issues WHERE id = ?
 	`, id)
+
 	issue, err := scanIssue(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return issues.Issue{}, fmt.Errorf("issue %s not found", id)
 		}
+
 		return issues.Issue{}, err
 	}
+
 	return issue, nil
 }
 
@@ -965,69 +1164,90 @@ type scannable interface {
 }
 
 func scanIssue(row scannable) (issues.Issue, error) {
-	var issue issues.Issue
-	var created, updated string
-	var closed sql.NullString
-	var deferred sql.NullString
-	var estimate sql.NullInt64
+	var (
+		issue            issues.Issue
+		created, updated string
+		closed           sql.NullString
+		deferred         sql.NullString
+		estimate         sql.NullInt64
+	)
+
 	if err := row.Scan(
 		&issue.ID, &issue.Sequence, &issue.Title, &issue.Description, &issue.Type, &issue.Status,
 		&issue.Priority, &issue.Assignee, &created, &updated, &closed, &issue.ParentID, &deferred, &estimate,
 	); err != nil {
 		return issues.Issue{}, err
 	}
+
 	var err error
+
 	issue.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
 	if err != nil {
 		return issues.Issue{}, err
 	}
+
 	issue.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated)
 	if err != nil {
 		return issues.Issue{}, err
 	}
+
 	if closed.Valid {
 		t, err := time.Parse(time.RFC3339Nano, closed.String)
 		if err != nil {
 			return issues.Issue{}, err
 		}
+
 		issue.ClosedAt = &t
 	}
+
 	if deferred.Valid {
 		t, err := time.Parse(time.RFC3339Nano, deferred.String)
 		if err != nil {
 			return issues.Issue{}, err
 		}
+
 		issue.DeferredUntil = &t
 	}
+
 	if estimate.Valid {
 		v := int(estimate.Int64)
 		issue.EstimateMinutes = &v
 	}
+
 	return issue, nil
 }
 
 func scanIssues(rows *sql.Rows, s *Store) ([]issues.Issue, error) {
 	var out []issues.Issue
+
 	for rows.Next() {
 		issue, err := scanIssue(rows)
 		if err != nil {
 			return nil, err
 		}
+
 		out = append(out, issue)
 	}
-	if err := rows.Err(); err != nil {
+
+	err := rows.Err()
+	if err != nil {
 		return nil, err
 	}
-	if err := rows.Close(); err != nil {
+
+	err = rows.Close()
+	if err != nil {
 		return nil, err
 	}
+
 	for i := range out {
 		labels, err := s.ListLabels(context.Background(), out[i].ID)
 		if err != nil {
 			return nil, err
 		}
+
 		out[i].Labels = labels
 	}
+
 	return out, nil
 }
 
@@ -1035,6 +1255,7 @@ func nullableString(v string) any {
 	if strings.TrimSpace(v) == "" {
 		return nil
 	}
+
 	return v
 }
 
@@ -1042,6 +1263,7 @@ func nullableTime(t *time.Time) any {
 	if t == nil {
 		return nil
 	}
+
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
@@ -1049,5 +1271,6 @@ func nullableInt(v *int) any {
 	if v == nil {
 		return nil
 	}
+
 	return *v
 }

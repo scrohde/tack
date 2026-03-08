@@ -47,8 +47,10 @@ Initialization creates:
 
 - `.tack/issues.db`
 - `.tack/config.json`
+- `.tack/.gitignore`
 
-The repo’s `.gitignore` already excludes `.tack/` and the local `tack` binary.
+`tack init` keeps ignore rules inside `.tack/`, so adopters do not need to edit the repo root
+`.gitignore`.
 
 ## Actor Resolution
 
@@ -66,6 +68,12 @@ Initialize the repo-local database:
 
 ```bash
 ./tack init
+```
+
+Install the tack agent skill into the current repo by default:
+
+```bash
+./tack skill install
 ```
 
 Create work:
@@ -127,6 +135,7 @@ tack close <id>
 tack reopen <id>
 tack comment add|list
 tack dep add|remove|list
+tack skill install
 tack labels add|remove|list
 tack export --json
 ```

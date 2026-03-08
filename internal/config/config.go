@@ -21,17 +21,21 @@ func Default() Config {
 
 func Load(repoRoot string) (Config, error) {
 	path := Path(repoRoot)
+
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Default(), nil
 	}
+
 	if err != nil {
 		return Config{}, err
 	}
+
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Config{}, err
 	}
+
 	return cfg, nil
 }
 
@@ -40,9 +44,11 @@ func WriteDefault(repoRoot string) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	}
+
 	data, err := json.MarshalIndent(Default(), "", "  ")
 	if err != nil {
 		return err
 	}
+
 	return os.WriteFile(path, append(data, '\n'), 0o644)
 }

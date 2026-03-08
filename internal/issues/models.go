@@ -36,29 +36,29 @@ var (
 )
 
 type Issue struct {
-	ID              string     `json:"id"`
-	Sequence        int64      `json:"sequence"`
-	Title           string     `json:"title"`
-	Description     string     `json:"description"`
-	Type            string     `json:"type"`
-	Status          string     `json:"status"`
-	Priority        string     `json:"priority"`
-	Assignee        string     `json:"assignee"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
-	ClosedAt        *time.Time `json:"closed_at"`
-	ParentID        string     `json:"parent_id"`
-	DeferredUntil   *time.Time `json:"deferred_until"`
 	EstimateMinutes *int       `json:"estimate_minutes"`
+	DeferredUntil   *time.Time `json:"deferred_until"`
+	ClosedAt        *time.Time `json:"closed_at"`
+	Description     string     `json:"description"`
+	Priority        string     `json:"priority"`
+	Assignee        string     `json:"assignee"`
+	Status          string     `json:"status"`
+	Type            string     `json:"type"`
+	ID              string     `json:"id"`
+	ParentID        string     `json:"parent_id"`
+	Title           string     `json:"title"`
 	Labels          []string   `json:"labels"`
+	Sequence        int64      `json:"sequence"`
 }
 
 type Link struct {
-	ID        int64     `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
 	SourceID  string    `json:"source_id"`
 	TargetID  string    `json:"target_id"`
 	Kind      string    `json:"kind"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        int64     `json:"id"`
 }
 
 type DependencyList struct {
@@ -70,42 +70,45 @@ type DependencyList struct {
 }
 
 type Comment struct {
-	ID        int64     `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
 	IssueID   string    `json:"issue_id"`
 	Body      string    `json:"body"`
 	Author    string    `json:"author"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        int64     `json:"id"`
 }
 
 type Event struct {
-	ID        int64     `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
 	IssueID   string    `json:"issue_id"`
 	Actor     string    `json:"actor"`
 	EventType string    `json:"event_type"`
 	Payload   string    `json:"payload"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        int64     `json:"id"`
 }
 
 type Export struct {
+	Metadata  map[string]any   `json:"metadata"`
+	IssueData map[string][]any `json:"issue_data,omitempty"`
 	Issues    []Issue          `json:"issues"`
 	Links     []Link           `json:"links"`
 	Comments  []Comment        `json:"comments"`
 	Events    []Event          `json:"events"`
-	Metadata  map[string]any   `json:"metadata"`
-	IssueData map[string][]any `json:"issue_data,omitempty"`
 }
 
 func IsValidType(v string) bool {
 	_, ok := ValidTypes[v]
+
 	return ok
 }
 
 func IsValidStatus(v string) bool {
 	_, ok := ValidStatuses[v]
+
 	return ok
 }
 
 func IsValidPriority(v string) bool {
 	_, ok := ValidPriorities[v]
+
 	return ok
 }

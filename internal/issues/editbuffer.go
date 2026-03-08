@@ -25,6 +25,7 @@ func FormatEditableIssue(issue Issue) string {
 	if issue.DeferredUntil != nil {
 		deferred = issue.DeferredUntil.Format(time.RFC3339)
 	}
+
 	estimate := ""
 	if issue.EstimateMinutes != nil {
 		estimate = strconv.Itoa(*issue.EstimateMinutes)
@@ -49,37 +50,51 @@ description:
 
 func ParseEditableIssue(body string) (EditableIssue, error) {
 	lines := strings.Split(body, "\n")
+
 	var out EditableIssue
+
 	inDescription := false
+
 	var description []string
 
 	for _, raw := range lines {
 		line := strings.TrimRight(raw, "\r")
+
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "#") && !inDescription {
 			continue
 		}
+
 		if trimmed == "<<<" {
 			inDescription = true
+
 			continue
 		}
+
 		if trimmed == ">>>" {
 			inDescription = false
+
 			continue
 		}
+
 		if inDescription {
 			description = append(description, line)
+
 			continue
 		}
+
 		if trimmed == "" || trimmed == "description:" {
 			continue
 		}
+
 		key, value, ok := strings.Cut(line, ":")
 		if !ok {
 			return out, fmt.Errorf("invalid line in edit buffer: %q", line)
 		}
+
 		key = strings.TrimSpace(key)
 		value = strings.TrimSpace(value)
+
 		switch key {
 		case "title":
 			out.Title = value
@@ -99,6 +114,7 @@ func ParseEditableIssue(body string) (EditableIssue, error) {
 				if err != nil {
 					return out, fmt.Errorf("invalid deferred_until: %w", err)
 				}
+
 				out.DeferredUntil = &t
 			}
 		case "estimate_minutes":
@@ -107,6 +123,7 @@ func ParseEditableIssue(body string) (EditableIssue, error) {
 				if err != nil {
 					return out, fmt.Errorf("invalid estimate_minutes: %w", err)
 				}
+
 				out.EstimateMinutes = &n
 			}
 		case "labels":
@@ -117,22 +134,28 @@ func ParseEditableIssue(body string) (EditableIssue, error) {
 	}
 
 	out.Description = strings.Trim(strings.Join(description, "\n"), "\n")
+
 	return out, nil
 }
 
 func NormalizeLabels(labels []string) []string {
 	seen := make(map[string]struct{}, len(labels))
+
 	var out []string
+
 	for _, label := range labels {
 		v := strings.ToLower(strings.TrimSpace(label))
 		if v == "" {
 			continue
 		}
+
 		if _, ok := seen[v]; ok {
 			continue
 		}
+
 		seen[v] = struct{}{}
 		out = append(out, v)
 	}
+
 	return out
 }

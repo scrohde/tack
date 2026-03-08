@@ -1,7 +1,7 @@
 package issues
 
 import (
-	"fmt"
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -10,20 +10,23 @@ import (
 func EditBuffer(initial string) (string, error) {
 	editor := strings.TrimSpace(os.Getenv("EDITOR"))
 	if editor == "" {
-		return "", fmt.Errorf("$EDITOR is not set")
+		return "", errors.New("$EDITOR is not set")
 	}
 
 	file, err := os.CreateTemp("", "tack-edit-*.txt")
 	if err != nil {
 		return "", err
 	}
+
 	path := file.Name()
 	defer os.Remove(path)
 
 	if _, err := file.WriteString(initial); err != nil {
 		file.Close()
+
 		return "", err
 	}
+
 	if err := file.Close(); err != nil {
 		return "", err
 	}
@@ -32,6 +35,7 @@ func EditBuffer(initial string) (string, error) {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+
 	cmd.Env = os.Environ()
 	if err := cmd.Run(); err != nil {
 		return "", err
@@ -41,5 +45,6 @@ func EditBuffer(initial string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
 	return string(data), nil
 }
