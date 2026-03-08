@@ -59,7 +59,8 @@ type ListFilter struct {
 }
 
 func Open(path string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	err := os.MkdirAll(filepath.Dir(path), 0o755)
+	if err != nil {
 		return nil, err
 	}
 
@@ -71,8 +72,10 @@ func Open(path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 
 	s := &Store{db: db, path: path}
-	if err := s.migrate(context.Background()); err != nil {
-		db.Close()
+
+	err = s.migrate(context.Background())
+	if err != nil {
+		closeDB(db)
 
 		return nil, err
 	}
@@ -146,7 +149,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			ON CONFLICT(key) DO UPDATE SET value = excluded.value;`,
 	}
 	for _, stmt := range stmts {
-		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+		_, err := s.db.ExecContext(ctx, stmt)
+		if err != nil {
 			return err
 		}
 	}
@@ -178,7 +182,7 @@ func (s *Store) CreateIssue(ctx context.Context, input CreateIssueInput, actor s
 	if err != nil {
 		return issues.Issue{}, err
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx)
 
 	if input.ParentID != "" {
 		err := ensureIssueExists(ctx, tx, input.ParentID)
@@ -214,7 +218,8 @@ func (s *Store) CreateIssue(ctx context.Context, input CreateIssueInput, actor s
 		return issues.Issue{}, err
 	}
 
-	if err := syncParentLink(ctx, tx, id, input.ParentID, now); err != nil {
+	err = syncParentLink(ctx, tx, id, input.ParentID, now)
+	if err != nil {
 		return issues.Issue{}, err
 	}
 
@@ -225,22 +230,25 @@ func (s *Store) CreateIssue(ctx context.Context, input CreateIssueInput, actor s
 		}
 	}
 
-	if err := addLabelsTx(ctx, tx, id, input.Labels, now); err != nil {
+	err = addLabelsTx(ctx, tx, id, input.Labels, now)
+	if err != nil {
 		return issues.Issue{}, err
 	}
 
-	if err := appendEventTx(ctx, tx, id, actor, "issue_created", map[string]any{
+	err = appendEventTx(ctx, tx, id, actor, "issue_created", map[string]any{
 		"title":      input.Title,
 		"type":       input.Type,
 		"priority":   input.Priority,
 		"parent_id":  input.ParentID,
 		"depends_on": input.DependsOn,
 		"labels":     input.Labels,
-	}); err != nil {
+	})
+	if err != nil {
 		return issues.Issue{}, err
 	}
 
-	if err := tx.Commit(); err != nil {
+	err = tx.Commit()
+	if err != nil {
 		return issues.Issue{}, err
 	}
 
@@ -320,7 +328,7 @@ func (s *Store) ListIssues(ctx context.Context, filter ListFilter) ([]issues.Iss
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 
 	return scanIssues(rows, s)
 }
@@ -373,7 +381,7 @@ func (s *Store) ReadyIssues(ctx context.Context, filter ListFilter) ([]issues.Is
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 
 	return scanIssues(rows, s)
 }
@@ -383,7 +391,7 @@ func (s *Store) UpdateIssue(ctx context.Context, id string, input UpdateIssueInp
 	if err != nil {
 		return issues.Issue{}, err
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx)
 
 	current, err := getIssueTx(ctx, tx, id)
 	if err != nil {
@@ -524,11 +532,13 @@ func (s *Store) UpdateIssue(ctx context.Context, id string, input UpdateIssueInp
 		}
 	}
 
-	if err := appendEventTx(ctx, tx, id, actor, "issue_updated", changed); err != nil {
+	err = appendEventTx(ctx, tx, id, actor, "issue_updated", changed)
+	if err != nil {
 		return issues.Issue{}, err
 	}
 
-	if err := tx.Commit(); err != nil {
+	err = tx.Commit()
+	if err != nil {
 		return issues.Issue{}, err
 	}
 
@@ -548,7 +558,7 @@ func (s *Store) setClosedState(ctx context.Context, id string, closed bool, reas
 	if err != nil {
 		return issues.Issue{}, err
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx)
 
 	issue, err := getIssueTx(ctx, tx, id)
 	if err != nil {
@@ -577,11 +587,13 @@ func (s *Store) setClosedState(ctx context.Context, id string, closed bool, reas
 		eventType = "issue_closed"
 	}
 
-	if err := appendEventTx(ctx, tx, id, actor, eventType, map[string]any{"reason": strings.TrimSpace(reason)}); err != nil {
+	err = appendEventTx(ctx, tx, id, actor, eventType, map[string]any{"reason": strings.TrimSpace(reason)})
+	if err != nil {
 		return issues.Issue{}, err
 	}
 
-	if err := tx.Commit(); err != nil {
+	err = tx.Commit()
+	if err != nil {
 		return issues.Issue{}, err
 	}
 
@@ -598,9 +610,10 @@ func (s *Store) AddComment(ctx context.Context, id, body, actor string) (issues.
 	if err != nil {
 		return issues.Comment{}, err
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx)
 
-	if err := ensureIssueExists(ctx, tx, id); err != nil {
+	err = ensureIssueExists(ctx, tx, id)
+	if err != nil {
 		return issues.Comment{}, err
 	}
 
@@ -613,11 +626,13 @@ func (s *Store) AddComment(ctx context.Context, id, body, actor string) (issues.
 		return issues.Comment{}, err
 	}
 
-	if err := appendEventTx(ctx, tx, id, actor, "comment_added", map[string]any{"body": body}); err != nil {
+	err = appendEventTx(ctx, tx, id, actor, "comment_added", map[string]any{"body": body})
+	if err != nil {
 		return issues.Comment{}, err
 	}
 
-	if err := tx.Commit(); err != nil {
+	err = tx.Commit()
+	if err != nil {
 		return issues.Comment{}, err
 	}
 
@@ -630,7 +645,8 @@ func (s *Store) AddComment(ctx context.Context, id, body, actor string) (issues.
 }
 
 func (s *Store) ListComments(ctx context.Context, id string) ([]issues.Comment, error) {
-	if _, err := s.GetIssue(ctx, id); err != nil {
+	_, err := s.GetIssue(ctx, id)
+	if err != nil {
 		return nil, err
 	}
 
@@ -643,7 +659,7 @@ func (s *Store) ListComments(ctx context.Context, id string) ([]issues.Comment, 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 
 	var comments []issues.Comment
 
@@ -674,7 +690,7 @@ func (s *Store) AddDependency(ctx context.Context, blockedID, blockerID, actor s
 	if err != nil {
 		return issues.Link{}, err
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx)
 
 	now := time.Now().UTC()
 
@@ -683,14 +699,16 @@ func (s *Store) AddDependency(ctx context.Context, blockedID, blockerID, actor s
 		return issues.Link{}, err
 	}
 
-	if err := appendEventTx(ctx, tx, blockedID, actor, "dependency_added", map[string]any{
+	err = appendEventTx(ctx, tx, blockedID, actor, "dependency_added", map[string]any{
 		"blocked_id": blockedID,
 		"blocker_id": blockerID,
-	}); err != nil {
+	})
+	if err != nil {
 		return issues.Link{}, err
 	}
 
-	if err := tx.Commit(); err != nil {
+	err = tx.Commit()
+	if err != nil {
 		return issues.Link{}, err
 	}
 
@@ -702,26 +720,30 @@ func (s *Store) RemoveDependency(ctx context.Context, blockedID, blockerID, acto
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx)
 
-	if err := ensureIssueExists(ctx, tx, blockedID); err != nil {
+	err = ensureIssueExists(ctx, tx, blockedID)
+	if err != nil {
 		return err
 	}
 
-	if err := ensureIssueExists(ctx, tx, blockerID); err != nil {
+	err = ensureIssueExists(ctx, tx, blockerID)
+	if err != nil {
 		return err
 	}
 
-	if _, err := tx.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		DELETE FROM issue_links WHERE kind = 'blocks' AND source_id = ? AND target_id = ?
-	`, blockerID, blockedID); err != nil {
+	`, blockerID, blockedID)
+	if err != nil {
 		return err
 	}
 
-	if err := appendEventTx(ctx, tx, blockedID, actor, "dependency_removed", map[string]any{
+	err = appendEventTx(ctx, tx, blockedID, actor, "dependency_removed", map[string]any{
 		"blocked_id": blockedID,
 		"blocker_id": blockerID,
-	}); err != nil {
+	})
+	if err != nil {
 		return err
 	}
 
@@ -729,7 +751,8 @@ func (s *Store) RemoveDependency(ctx context.Context, blockedID, blockerID, acto
 }
 
 func (s *Store) ListDependencies(ctx context.Context, id string) (issues.DependencyList, error) {
-	if _, err := s.GetIssue(ctx, id); err != nil {
+	_, err := s.GetIssue(ctx, id)
+	if err != nil {
 		return issues.DependencyList{}, err
 	}
 
@@ -753,22 +776,27 @@ func (s *Store) AddLabels(ctx context.Context, id string, labels []string, actor
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx)
 
-	if err := ensureIssueExists(ctx, tx, id); err != nil {
+	err = ensureIssueExists(ctx, tx, id)
+	if err != nil {
 		return nil, err
 	}
 
 	now := time.Now().UTC()
-	if err := addLabelsTx(ctx, tx, id, labels, now); err != nil {
+
+	err = addLabelsTx(ctx, tx, id, labels, now)
+	if err != nil {
 		return nil, err
 	}
 
-	if err := appendEventTx(ctx, tx, id, actor, "labels_added", map[string]any{"labels": labels}); err != nil {
+	err = appendEventTx(ctx, tx, id, actor, "labels_added", map[string]any{"labels": labels})
+	if err != nil {
 		return nil, err
 	}
 
-	if err := tx.Commit(); err != nil {
+	err = tx.Commit()
+	if err != nil {
 		return nil, err
 	}
 
@@ -782,23 +810,27 @@ func (s *Store) RemoveLabels(ctx context.Context, id string, labels []string, ac
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx)
 
-	if err := ensureIssueExists(ctx, tx, id); err != nil {
+	err = ensureIssueExists(ctx, tx, id)
+	if err != nil {
 		return nil, err
 	}
 
 	for _, label := range labels {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM issue_labels WHERE issue_id = ? AND label = ?`, id, label); err != nil {
+		_, err = tx.ExecContext(ctx, `DELETE FROM issue_labels WHERE issue_id = ? AND label = ?`, id, label)
+		if err != nil {
 			return nil, err
 		}
 	}
 
-	if err := appendEventTx(ctx, tx, id, actor, "labels_removed", map[string]any{"labels": labels}); err != nil {
+	err = appendEventTx(ctx, tx, id, actor, "labels_removed", map[string]any{"labels": labels})
+	if err != nil {
 		return nil, err
 	}
 
-	if err := tx.Commit(); err != nil {
+	err = tx.Commit()
+	if err != nil {
 		return nil, err
 	}
 
@@ -812,26 +844,32 @@ func (s *Store) ReplaceLabels(ctx context.Context, id string, labels []string, a
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx)
 
-	if err := ensureIssueExists(ctx, tx, id); err != nil {
+	err = ensureIssueExists(ctx, tx, id)
+	if err != nil {
 		return nil, err
 	}
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM issue_labels WHERE issue_id = ?`, id); err != nil {
+	_, err = tx.ExecContext(ctx, `DELETE FROM issue_labels WHERE issue_id = ?`, id)
+	if err != nil {
 		return nil, err
 	}
 
 	now := time.Now().UTC()
-	if err := addLabelsTx(ctx, tx, id, labels, now); err != nil {
+
+	err = addLabelsTx(ctx, tx, id, labels, now)
+	if err != nil {
 		return nil, err
 	}
 
-	if err := appendEventTx(ctx, tx, id, actor, "labels_replaced", map[string]any{"labels": labels}); err != nil {
+	err = appendEventTx(ctx, tx, id, actor, "labels_replaced", map[string]any{"labels": labels})
+	if err != nil {
 		return nil, err
 	}
 
-	if err := tx.Commit(); err != nil {
+	err = tx.Commit()
+	if err != nil {
 		return nil, err
 	}
 
@@ -843,7 +881,7 @@ func (s *Store) ListLabels(ctx context.Context, id string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 
 	var labels []string
 
@@ -876,7 +914,7 @@ func (s *Store) Export(ctx context.Context) (issues.Export, error) {
 	if err != nil {
 		return issues.Export{}, err
 	}
-	defer commentsRows.Close()
+	defer closeRows(commentsRows)
 
 	var comments []issues.Comment
 
@@ -903,7 +941,7 @@ func (s *Store) Export(ctx context.Context) (issues.Export, error) {
 	if err != nil {
 		return issues.Export{}, err
 	}
-	defer eventRows.Close()
+	defer closeRows(eventRows)
 
 	var events []issues.Event
 
@@ -930,7 +968,7 @@ func (s *Store) Export(ctx context.Context) (issues.Export, error) {
 	if err != nil {
 		return issues.Export{}, err
 	}
-	defer metaRows.Close()
+	defer closeRows(metaRows)
 
 	meta := make(map[string]any)
 
@@ -961,7 +999,7 @@ func (s *Store) listLinks(ctx context.Context, query string, args ...any) ([]iss
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows)
 
 	var links []issues.Link
 
@@ -996,16 +1034,20 @@ func addDependencyTx(ctx context.Context, tx *sql.Tx, blockedID, blockerID strin
 func addDependencyTxWithLink(ctx context.Context, tx *sql.Tx, blockedID, blockerID string, now time.Time) (issues.Link, error) {
 	blockedID = strings.TrimSpace(blockedID)
 
+	var err error
+
 	blockerID = strings.TrimSpace(blockerID)
 	if blockedID == blockerID {
 		return issues.Link{}, errors.New("an issue cannot depend on itself")
 	}
 
-	if err := ensureIssueExists(ctx, tx, blockedID); err != nil {
+	err = ensureIssueExists(ctx, tx, blockedID)
+	if err != nil {
 		return issues.Link{}, err
 	}
 
-	if err := ensureIssueExists(ctx, tx, blockerID); err != nil {
+	err = ensureIssueExists(ctx, tx, blockerID)
+	if err != nil {
 		return issues.Link{}, err
 	}
 
@@ -1027,7 +1069,10 @@ func addDependencyTxWithLink(ctx context.Context, tx *sql.Tx, blockedID, blocker
 		return issues.Link{}, err
 	}
 
-	id, _ := result.LastInsertId()
+	id, err := result.LastInsertId()
+	if err != nil {
+		return issues.Link{}, err
+	}
 
 	return issues.Link{
 		ID:        id,
@@ -1065,11 +1110,12 @@ func dependencyPathExists(ctx context.Context, tx *sql.Tx, startBlocked, desired
 
 func addLabelsTx(ctx context.Context, tx *sql.Tx, id string, labels []string, now time.Time) error {
 	for _, label := range labels {
-		if _, err := tx.ExecContext(ctx, `
+		_, err := tx.ExecContext(ctx, `
 			INSERT INTO issue_labels(issue_id, label, created_at)
 			VALUES (?, ?, ?)
 			ON CONFLICT(issue_id, label) DO NOTHING
-		`, id, label, now.Format(time.RFC3339Nano)); err != nil {
+		`, id, label, now.Format(time.RFC3339Nano))
+		if err != nil {
 			return err
 		}
 	}
@@ -1078,9 +1124,10 @@ func addLabelsTx(ctx context.Context, tx *sql.Tx, id string, labels []string, no
 }
 
 func syncParentLink(ctx context.Context, tx *sql.Tx, childID, parentID string, now time.Time) error {
-	if _, err := tx.ExecContext(ctx, `
+	_, err := tx.ExecContext(ctx, `
 		DELETE FROM issue_links WHERE kind = 'parent_child' AND target_id = ?
-	`, childID); err != nil {
+	`, childID)
+	if err != nil {
 		return err
 	}
 
@@ -1088,7 +1135,7 @@ func syncParentLink(ctx context.Context, tx *sql.Tx, childID, parentID string, n
 		return nil
 	}
 
-	_, err := tx.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO issue_links(source_id, target_id, kind, created_at)
 		VALUES (?, ?, 'parent_child', ?)
 	`, parentID, childID, now.Format(time.RFC3339Nano))
@@ -1172,14 +1219,13 @@ func scanIssue(row scannable) (issues.Issue, error) {
 		estimate         sql.NullInt64
 	)
 
-	if err := row.Scan(
+	err := row.Scan(
 		&issue.ID, &issue.Sequence, &issue.Title, &issue.Description, &issue.Type, &issue.Status,
 		&issue.Priority, &issue.Assignee, &created, &updated, &closed, &issue.ParentID, &deferred, &estimate,
-	); err != nil {
+	)
+	if err != nil {
 		return issues.Issue{}, err
 	}
-
-	var err error
 
 	issue.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
 	if err != nil {
@@ -1273,4 +1319,25 @@ func nullableInt(v *int) any {
 	}
 
 	return *v
+}
+
+func closeDB(db *sql.DB) {
+	err := db.Close()
+	if err != nil {
+		return
+	}
+}
+
+func rollbackTx(tx *sql.Tx) {
+	err := tx.Rollback()
+	if err != nil && !errors.Is(err, sql.ErrTxDone) {
+		return
+	}
+}
+
+func closeRows(rows *sql.Rows) {
+	err := rows.Close()
+	if err != nil {
+		return
+	}
 }

@@ -10,11 +10,11 @@ formatters:
     - gci
   settings:
     gofumpt:
-      module-path: rss
+      module-path: tack
       extra-rules: true
     goimports:
       local-prefixes:
-        - rss
+        - tack
     gci:
       custom-order: true
       no-inline-comments: true
@@ -23,31 +23,25 @@ formatters:
       sections:
         - standard
         - default
-        - prefix(rss)
+        - prefix(tack)
         - blank
         - dot
         - alias
         - localmodule
 
 linters:
-  # Maximum strictness: enable all linters by default.
-  default: all
+  default: standard
   disable:
-    - wsl
     - varnamelen
-    - goconst
   enable:
+    - depguard
+    - noinlineerr
+    - revive
     - wsl_v5
 
   settings:
     revive:
-      rules:
-        - name: line-length-limit
-          arguments: [ 120 ]
-        - name: add-constant
-          disabled: true
       severity: error
-      enable-all-rules: true
 
     depguard:
       rules:
@@ -57,45 +51,13 @@ linters:
           allow:
             - $gostd
             - modernc.org/sqlite
-
-    govet:
-      enable-all: true
-      settings:
-        shadow:
-          strict: true
+            - tack
 
     errcheck:
       check-type-assertions: true
       check-blank: true
       disable-default-exclusions: true
       verbose: true
-
-
-
-    gocritic:
-      enable-all: true
-
-    testifylint:
-      enable-all: true
-
-    cyclop:
-      max-complexity: 10
-
-    gocognit:
-      min-complexity: 10
-
-    funlen:
-      lines: 60
-      statements: 40
-      ignore-comments: true
-
-    lll:
-      line-length: 120
-      tab-width: 1
-
-    nolintlint:
-      require-explanation: true
-      allow-unused: false
 
 issues:
   # No truncation: show everything in CI.

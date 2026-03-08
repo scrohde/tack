@@ -23,12 +23,16 @@ func TestInstallTackSkillOverwritesExistingFile(t *testing.T) {
 	root := t.TempDir()
 
 	targetDir := filepath.Join(root, TackSkillName)
-	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+
+	err := os.MkdirAll(targetDir, 0o755)
+	if err != nil {
 		t.Fatalf("mkdir target dir: %v", err)
 	}
 
 	targetPath := filepath.Join(targetDir, tackSkillFileName)
-	if err := os.WriteFile(targetPath, []byte("old content"), 0o644); err != nil {
+
+	err = os.WriteFile(targetPath, []byte("old content"), 0o644)
+	if err != nil {
 		t.Fatalf("seed target file: %v", err)
 	}
 

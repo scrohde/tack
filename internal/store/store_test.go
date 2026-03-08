@@ -124,7 +124,8 @@ func TestReadyFilteringAndCloseUnblocks(t *testing.T) {
 		t.Fatalf("unexpected ready set before close: %#v", ready)
 	}
 
-	if _, err := s.CloseIssue(ctx, blocker.ID, "done", "alice"); err != nil {
+	_, err = s.CloseIssue(ctx, blocker.ID, "done", "alice")
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -163,11 +164,13 @@ func TestDependencyCycleRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := s.AddDependency(ctx, b.ID, a.ID, "alice"); err != nil {
+	_, err = s.AddDependency(ctx, b.ID, a.ID, "alice")
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := s.AddDependency(ctx, a.ID, b.ID, "alice"); err == nil {
+	_, err = s.AddDependency(ctx, a.ID, b.ID, "alice")
+	if err == nil {
 		t.Fatal("expected cycle rejection")
 	}
 }
@@ -187,7 +190,8 @@ func TestCommentsLabelsAndEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := s.AddComment(ctx, issue.ID, "note", "alice"); err != nil {
+	_, err = s.AddComment(ctx, issue.ID, "note", "alice")
+	if err != nil {
 		t.Fatal(err)
 	}
 

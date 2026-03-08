@@ -18,26 +18,35 @@ func TestInitCreatesRepoState(t *testing.T) {
 	testutil.Chdir(t, repo)
 
 	var stdout, stderr bytes.Buffer
-	if err := cli.Execute(context.Background(), []string{"init", "--json"}, &stdout, &stderr); err != nil {
+
+	err := cli.Execute(context.Background(), []string{"init", "--json"}, &stdout, &stderr)
+	if err != nil {
 		t.Fatalf("init failed: %v stderr=%s", err, stderr.String())
 	}
 
-	if _, err := os.Stat(filepath.Join(repo, ".tack", "issues.db")); err != nil {
+	_, err = os.Stat(filepath.Join(repo, ".tack", "issues.db"))
+	if err != nil {
 		t.Fatalf("issues.db missing: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(repo, ".tack", "config.json")); err != nil {
+	_, err = os.Stat(filepath.Join(repo, ".tack", "config.json"))
+	if err != nil {
 		t.Fatalf("config.json missing: %v", err)
 	}
 
-	if got, err := os.ReadFile(filepath.Join(repo, ".tack", ".gitignore")); err != nil {
+	got, err := os.ReadFile(filepath.Join(repo, ".tack", ".gitignore"))
+	if err != nil {
 		t.Fatalf(".gitignore missing: %v", err)
-	} else if string(got) != "*\n!.gitignore\n" {
+	}
+
+	if string(got) != "*\n!.gitignore\n" {
 		t.Fatalf("unexpected .tack/.gitignore: %q", string(got))
 	}
 
 	var payload map[string]any
-	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+
+	err = json.Unmarshal(stdout.Bytes(), &payload)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -56,14 +65,18 @@ func TestInitPreservesExistingTackGitignore(t *testing.T) {
 	testutil.Chdir(t, repo)
 
 	tackDir := filepath.Join(repo, ".tack")
-	if err := os.MkdirAll(tackDir, 0o755); err != nil {
+
+	err := os.MkdirAll(tackDir, 0o755)
+	if err != nil {
 		t.Fatalf("mkdir .tack: %v", err)
 	}
 
 	gitignorePath := filepath.Join(tackDir, ".gitignore")
 
 	const customContent = "custom\n"
-	if err := os.WriteFile(gitignorePath, []byte(customContent), 0o644); err != nil {
+
+	err = os.WriteFile(gitignorePath, []byte(customContent), 0o644)
+	if err != nil {
 		t.Fatalf("write custom gitignore: %v", err)
 	}
 
@@ -92,11 +105,11 @@ func TestSkillInstallModes(t *testing.T) {
 	repoTarget := filepath.Join(repo, ".agents", "skills", "tack", "SKILL.md")
 	assertFileHasContent(t, repoTarget)
 
-	if got := repoInstall["installed_skill_dir"].(string); canonicalPath(t, got) != canonicalPath(t, repoSkillDir) {
+	if got := stringField(t, repoInstall, "installed_skill_dir"); canonicalPath(t, got) != canonicalPath(t, repoSkillDir) {
 		t.Fatalf("unexpected repo installed skill dir: %#v", repoInstall)
 	}
 
-	if got := repoInstall["installed_path"].(string); canonicalPath(t, got) != canonicalPath(t, repoTarget) {
+	if got := stringField(t, repoInstall, "installed_path"); canonicalPath(t, got) != canonicalPath(t, repoTarget) {
 		t.Fatalf("unexpected repo installed path: %#v", repoInstall)
 	}
 
@@ -112,11 +125,11 @@ func TestSkillInstallModes(t *testing.T) {
 	homeTarget := filepath.Join(homeDir, ".agents", "skills", "tack", "SKILL.md")
 	assertFileHasContent(t, homeTarget)
 
-	if got := homeInstall["installed_skill_dir"].(string); canonicalPath(t, got) != canonicalPath(t, homeSkillDir) {
+	if got := stringField(t, homeInstall, "installed_skill_dir"); canonicalPath(t, got) != canonicalPath(t, homeSkillDir) {
 		t.Fatalf("unexpected home installed skill dir: %#v", homeInstall)
 	}
 
-	if got := homeInstall["installed_path"].(string); canonicalPath(t, got) != canonicalPath(t, homeTarget) {
+	if got := stringField(t, homeInstall, "installed_path"); canonicalPath(t, got) != canonicalPath(t, homeTarget) {
 		t.Fatalf("unexpected home installed path: %#v", homeInstall)
 	}
 
@@ -131,11 +144,11 @@ func TestSkillInstallModes(t *testing.T) {
 	customTarget := filepath.Join(customRoot, "tack", "SKILL.md")
 	assertFileHasContent(t, customTarget)
 
-	if got := customInstall["installed_skill_dir"].(string); canonicalPath(t, got) != canonicalPath(t, customSkillDir) {
+	if got := stringField(t, customInstall, "installed_skill_dir"); canonicalPath(t, got) != canonicalPath(t, customSkillDir) {
 		t.Fatalf("unexpected custom installed skill dir: %#v", customInstall)
 	}
 
-	if got := customInstall["installed_path"].(string); canonicalPath(t, got) != canonicalPath(t, customTarget) {
+	if got := stringField(t, customInstall, "installed_path"); canonicalPath(t, got) != canonicalPath(t, customTarget) {
 		t.Fatalf("unexpected custom installed path: %#v", customInstall)
 	}
 }
@@ -171,7 +184,7 @@ func TestCreateClaimReadyCloseAndCommentJSON(t *testing.T) {
 		"--type", "task",
 		"--priority", "medium",
 		"--description", "body",
-		"--depends-on", blocker["id"].(string),
+		"--depends-on", stringField(t, blocker, "id"),
 		"--json",
 	})
 
@@ -180,7 +193,7 @@ func TestCreateClaimReadyCloseAndCommentJSON(t *testing.T) {
 		t.Fatalf("unexpected ready set: %#v", ready)
 	}
 
-	runJSON[map[string]any](t, repo, "update", blocker["id"].(string), "--claim", "--json")
+	runJSON[map[string]any](t, repo, "update", stringField(t, blocker, "id"), "--claim", "--json")
 
 	ready = runJSON[[]map[string]any](t, repo, "ready", "--json")
 	if len(ready) != 0 {
@@ -189,25 +202,25 @@ func TestCreateClaimReadyCloseAndCommentJSON(t *testing.T) {
 
 	t.Setenv("TACK_ACTOR", "bob")
 
-	err := runCLIError(t, repo, "update", blocker["id"].(string), "--claim", "--json")
+	err := runCLIError(t, repo, "update", stringField(t, blocker, "id"), "--claim", "--json")
 	if err == nil || !strings.Contains(err.Error(), "already claimed by alice") {
 		t.Fatalf("expected claim conflict, got %v", err)
 	}
 
 	t.Setenv("TACK_ACTOR", "alice")
-	runJSON[map[string]any](t, repo, "close", blocker["id"].(string), "--reason", "done", "--json")
+	runJSON[map[string]any](t, repo, "close", stringField(t, blocker, "id"), "--reason", "done", "--json")
 
 	ready = runJSON[[]map[string]any](t, repo, "ready", "--json")
 	if len(ready) != 1 || ready[0]["id"] != blocked["id"] {
 		t.Fatalf("expected blocked issue to become ready, got %#v", ready)
 	}
 
-	comment := runJSON[map[string]any](t, repo, "comment", "add", blocked["id"].(string), "--body", "implemented", "--json")
+	comment := runJSON[map[string]any](t, repo, "comment", "add", stringField(t, blocked, "id"), "--body", "implemented", "--json")
 	if comment["issue_id"] != blocked["id"] || comment["body"] != "implemented" {
 		t.Fatalf("unexpected comment payload: %#v", comment)
 	}
 
-	comments := runJSON[[]map[string]any](t, repo, "comment", "list", blocked["id"].(string), "--json")
+	comments := runJSON[[]map[string]any](t, repo, "comment", "list", stringField(t, blocked, "id"), "--json")
 	if len(comments) != 1 || comments[0]["body"] != "implemented" {
 		t.Fatalf("unexpected comments payload: %#v", comments)
 	}
@@ -229,7 +242,8 @@ func runJSON[T any](t *testing.T, repo string, args ...string) T {
 		t.Fatalf("command %v failed: %v", args, err)
 	}
 
-	if err := json.Unmarshal(out, &zero); err != nil {
+	err = json.Unmarshal(out, &zero)
+	if err != nil {
 		t.Fatalf("unmarshal output %s: %v", string(out), err)
 	}
 
@@ -239,7 +253,8 @@ func runJSON[T any](t *testing.T, repo string, args ...string) T {
 func runCLI(t *testing.T, repo string, args ...string) {
 	t.Helper()
 
-	if _, err := runCLIBytes(repo, args...); err != nil {
+	_, err := runCLIBytes(repo, args...)
+	if err != nil {
 		t.Fatalf("command %v failed: %v", args, err)
 	}
 }
@@ -278,6 +293,22 @@ func assertFileHasContent(t *testing.T, path string) {
 	if !strings.Contains(string(data), "tack agent workflow") {
 		t.Fatalf("unexpected skill contents in %s: %q", path, string(data))
 	}
+}
+
+func stringField(t *testing.T, data map[string]any, key string) string {
+	t.Helper()
+
+	value, ok := data[key]
+	if !ok {
+		t.Fatalf("missing key %q in %#v", key, data)
+	}
+
+	text, ok := value.(string)
+	if !ok {
+		t.Fatalf("expected %q to be string, got %T", key, value)
+	}
+
+	return text
 }
 
 func canonicalPath(t *testing.T, path string) string {

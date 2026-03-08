@@ -24,6 +24,7 @@
 
 - `go build -o tack ./cmd/tack`
 - `go test ./...`
+- `mkdir -p /tmp/go-build-cache /tmp/golangci-lint-cache && GOCACHE=/tmp/go-build-cache GOLANGCI_LINT_CACHE=/tmp/golangci-lint-cache golangci-lint fmt`
 - `mkdir -p /tmp/go-build-cache /tmp/golangci-lint-cache && GOCACHE=/tmp/go-build-cache GOLANGCI_LINT_CACHE=/tmp/golangci-lint-cache golangci-lint run --fix`
 - `go run ./cmd/tack --help`
 - `go generate ./internal/skill`
@@ -37,10 +38,13 @@
 - Preserve both human-readable CLI output and `--json` behavior when changing commands.
 - Add or update tests alongside behavior changes. Existing CLI and store tests are the main safety
   net.
-- Make sure test and lint pass before committing.
+- Make sure formatting, lint, and tests pass before committing. Run both `golangci-lint fmt` and
+  `golangci-lint run --fix` with the repo cache settings before commit.
 
 ## Testing Notes
 
 - `internal/testutil` contains temp-repo helpers used by CLI and store tests.
 - Prefer focused test coverage near the package you changed, then run `go test ./...`.
-- Run `golangci-lint` with `GOCACHE=/tmp/go-build-cache` and `GOLANGCI_LINT_CACHE=/tmp/golangci-lint-cache` to avoid sandbox permission errors writing to `~/Library/Caches`.
+- Run `golangci-lint fmt` and `golangci-lint run --fix` with `GOCACHE=/tmp/go-build-cache` and
+  `GOLANGCI_LINT_CACHE=/tmp/golangci-lint-cache` to avoid sandbox permission errors writing to
+  `~/Library/Caches`.

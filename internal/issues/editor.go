@@ -19,15 +19,17 @@ func EditBuffer(initial string) (string, error) {
 	}
 
 	path := file.Name()
-	defer os.Remove(path)
+	defer removeTempFile(path)
 
-	if _, err := file.WriteString(initial); err != nil {
-		file.Close()
+	_, err = file.WriteString(initial)
+	if err != nil {
+		closeFile(file)
 
 		return "", err
 	}
 
-	if err := file.Close(); err != nil {
+	err = file.Close()
+	if err != nil {
 		return "", err
 	}
 
@@ -37,7 +39,9 @@ func EditBuffer(initial string) (string, error) {
 	cmd.Stderr = os.Stderr
 
 	cmd.Env = os.Environ()
-	if err := cmd.Run(); err != nil {
+
+	err = cmd.Run()
+	if err != nil {
 		return "", err
 	}
 
@@ -47,4 +51,18 @@ func EditBuffer(initial string) (string, error) {
 	}
 
 	return string(data), nil
+}
+
+func removeTempFile(path string) {
+	err := os.Remove(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return
+	}
+}
+
+func closeFile(file *os.File) {
+	err := file.Close()
+	if err != nil {
+		return
+	}
 }

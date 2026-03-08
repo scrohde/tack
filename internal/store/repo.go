@@ -20,7 +20,9 @@ func FindRepoRoot(start string) (string, error) {
 
 	for {
 		gitPath := filepath.Join(current, ".git")
-		if _, err := os.Stat(gitPath); err == nil {
+
+		_, err := os.Stat(gitPath)
+		if err == nil {
 			return current, nil
 		}
 
@@ -43,15 +45,19 @@ func gitignorePath(repoRoot string) string {
 
 func InitRepo(repoRoot string) error {
 	dir := filepath.Join(repoRoot, ".tack")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+
+	err := os.MkdirAll(dir, 0o755)
+	if err != nil {
 		return err
 	}
 
-	if err := ensureTackGitignore(repoRoot); err != nil {
+	err = ensureTackGitignore(repoRoot)
+	if err != nil {
 		return err
 	}
 
-	if err := config.WriteDefault(repoRoot); err != nil {
+	err = config.WriteDefault(repoRoot)
+	if err != nil {
 		return err
 	}
 
@@ -65,7 +71,9 @@ func InitRepo(repoRoot string) error {
 
 func ensureTackGitignore(repoRoot string) error {
 	path := gitignorePath(repoRoot)
-	if _, err := os.Stat(path); err == nil {
+
+	_, err := os.Stat(path)
+	if err == nil {
 		return nil
 	} else if !os.IsNotExist(err) {
 		return err
@@ -75,7 +83,8 @@ func ensureTackGitignore(repoRoot string) error {
 }
 
 func EnsureInitialized(repoRoot string) error {
-	if _, err := os.Stat(dbPath(repoRoot)); err != nil {
+	_, err := os.Stat(dbPath(repoRoot))
+	if err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("tack is not initialized in %s; run `tack init`", repoRoot)
 		}

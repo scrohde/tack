@@ -32,7 +32,10 @@ func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) error
 
 func (a *App) Execute(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		a.printUsage()
+		err := a.printUsage()
+		if err != nil {
+			return err
+		}
 
 		return nil
 	}
@@ -67,7 +70,10 @@ func (a *App) Execute(ctx context.Context, args []string) error {
 	case "export":
 		return a.runExport(ctx, args[1:])
 	case "-h", "--help", "help":
-		a.printUsage()
+		err := a.printUsage()
+		if err != nil {
+			return err
+		}
 
 		return nil
 	default:
@@ -80,7 +86,9 @@ func (a *App) runInit(args []string) error {
 	fs.SetOutput(a.stderr)
 
 	jsonOut := fs.Bool("json", false, "output JSON")
-	if err := fs.Parse(args); err != nil {
+
+	err := fs.Parse(args)
+	if err != nil {
 		return err
 	}
 
@@ -89,7 +97,8 @@ func (a *App) runInit(args []string) error {
 		return err
 	}
 
-	if err := store.InitRepo(repoRoot); err != nil {
+	err = store.InitRepo(repoRoot)
+	if err != nil {
 		return err
 	}
 
@@ -111,7 +120,7 @@ func (a *App) runCreate(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer closeStore(s)
 
 	fs := flag.NewFlagSet("create", flag.ContinueOnError)
 	fs.SetOutput(a.stderr)
@@ -134,7 +143,8 @@ func (a *App) runCreate(ctx context.Context, args []string) error {
 	fs.Var(&dependsOn, "depends-on", "blocker issue ID (repeatable)")
 	fs.Var(&labels, "label", "label (repeatable)")
 
-	if err := fs.Parse(args); err != nil {
+	err = fs.Parse(args)
+	if err != nil {
 		return err
 	}
 
@@ -215,7 +225,9 @@ func (a *App) runSkillInstall(args []string) error {
 	customPath := fs.String("path", "", "custom skills root")
 
 	jsonOut := fs.Bool("json", false, "output JSON")
-	if err := fs.Parse(args); err != nil {
+
+	err := fs.Parse(args)
+	if err != nil {
 		return err
 	}
 
@@ -284,7 +296,7 @@ func (a *App) runShow(ctx context.Context, args []string) error {
 
 	_ = repoRoot
 
-	defer s.Close()
+	defer closeStore(s)
 
 	if len(args) == 0 {
 		return errors.New("usage: tack show <id>")
@@ -295,7 +307,9 @@ func (a *App) runShow(ctx context.Context, args []string) error {
 	fs.SetOutput(a.stderr)
 
 	jsonOut := fs.Bool("json", false, "output JSON")
-	if err := fs.Parse(args[1:]); err != nil {
+
+	err = fs.Parse(args[1:])
+	if err != nil {
 		return err
 	}
 
@@ -320,7 +334,7 @@ func (a *App) runList(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer closeStore(s)
 
 	filter, jsonOut, err := parseListFilter("list", a.stderr, args)
 	if err != nil {
@@ -344,7 +358,7 @@ func (a *App) runReady(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer closeStore(s)
 
 	filter, jsonOut, err := parseListFilter("ready", a.stderr, args)
 	if err != nil {
@@ -368,7 +382,7 @@ func (a *App) runUpdate(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer closeStore(s)
 
 	if len(args) == 0 {
 		return errors.New("usage: tack update <id> [flags]")
@@ -402,7 +416,8 @@ func (a *App) runUpdate(ctx context.Context, args []string) error {
 	fs.Var(deferredUntil, "deferred-until", "RFC3339 time; empty clears")
 	fs.Var(estimateMinutes, "estimate-minutes", "minutes; empty clears")
 
-	if err := fs.Parse(args[1:]); err != nil {
+	err = fs.Parse(args[1:])
+	if err != nil {
 		return err
 	}
 
@@ -495,7 +510,7 @@ func (a *App) runEdit(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer closeStore(s)
 
 	if len(args) == 0 {
 		return errors.New("usage: tack edit <id>")
@@ -507,7 +522,9 @@ func (a *App) runEdit(ctx context.Context, args []string) error {
 	jsonOut := fs.Bool("json", false, "output JSON")
 
 	actorFlag := fs.String("actor", "", "actor override")
-	if err := fs.Parse(args[1:]); err != nil {
+
+	err = fs.Parse(args[1:])
+	if err != nil {
 		return err
 	}
 
@@ -549,16 +566,17 @@ func (a *App) runEdit(ctx context.Context, args []string) error {
 		EstimateMinutes:    parsed.EstimateMinutes,
 	}
 
-	updated, err := s.UpdateIssue(ctx, id, input, actor)
+	_, err = s.UpdateIssue(ctx, id, input, actor)
 	if err != nil {
 		return err
 	}
 
-	if _, err := s.ReplaceLabels(ctx, id, parsed.Labels, actor); err != nil {
+	_, err = s.ReplaceLabels(ctx, id, parsed.Labels, actor)
+	if err != nil {
 		return err
 	}
 
-	updated, err = s.GetIssue(ctx, id)
+	updated, err := s.GetIssue(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -583,7 +601,7 @@ func (a *App) runCloseLike(ctx context.Context, args []string, closeIssue bool) 
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer closeStore(s)
 
 	name := "close"
 	if !closeIssue {
@@ -601,7 +619,9 @@ func (a *App) runCloseLike(ctx context.Context, args []string, closeIssue bool) 
 	jsonOut := fs.Bool("json", false, "output JSON")
 
 	actorFlag := fs.String("actor", "", "actor override")
-	if err := fs.Parse(args[1:]); err != nil {
+
+	err = fs.Parse(args[1:])
+	if err != nil {
 		return err
 	}
 
@@ -638,7 +658,7 @@ func (a *App) runCloseLike(ctx context.Context, args []string, closeIssue bool) 
 
 func (a *App) runComment(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tack comment add|list ...")
+		return errors.New("usage: tack comment add|list")
 	}
 
 	switch args[0] {
@@ -656,7 +676,7 @@ func (a *App) runCommentAdd(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer closeStore(s)
 
 	if len(args) == 0 {
 		return errors.New("usage: tack comment add <id> [--body|--body-file]")
@@ -670,7 +690,9 @@ func (a *App) runCommentAdd(ctx context.Context, args []string) error {
 	jsonOut := fs.Bool("json", false, "output JSON")
 
 	actorFlag := fs.String("actor", "", "actor override")
-	if err := fs.Parse(args[1:]); err != nil {
+
+	err = fs.Parse(args[1:])
+	if err != nil {
 		return err
 	}
 
@@ -714,7 +736,7 @@ func (a *App) runCommentList(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer closeStore(s)
 
 	if len(args) == 0 {
 		return errors.New("usage: tack comment list <id>")
@@ -725,7 +747,9 @@ func (a *App) runCommentList(ctx context.Context, args []string) error {
 	fs.SetOutput(a.stderr)
 
 	jsonOut := fs.Bool("json", false, "output JSON")
-	if err := fs.Parse(args[1:]); err != nil {
+
+	err = fs.Parse(args[1:])
+	if err != nil {
 		return err
 	}
 
@@ -743,7 +767,8 @@ func (a *App) runCommentList(ctx context.Context, args []string) error {
 	}
 
 	for _, comment := range comments {
-		if _, err := fmt.Fprintf(a.stdout, "%d\t%s\t%s\t%s\n", comment.ID, comment.CreatedAt.Format(time.RFC3339), comment.Author, comment.Body); err != nil {
+		_, err = fmt.Fprintf(a.stdout, "%d\t%s\t%s\t%s\n", comment.ID, comment.CreatedAt.Format(time.RFC3339), comment.Author, comment.Body)
+		if err != nil {
 			return err
 		}
 	}
@@ -753,7 +778,7 @@ func (a *App) runCommentList(ctx context.Context, args []string) error {
 
 func (a *App) runDep(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tack dep add|remove|list ...")
+		return errors.New("usage: tack dep add|remove|list")
 	}
 
 	switch args[0] {
@@ -773,7 +798,7 @@ func (a *App) runDepAdd(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer closeStore(s)
 
 	if len(args) < 2 {
 		return errors.New("usage: tack dep add <blocked-id> <blocker-id>")
@@ -785,7 +810,9 @@ func (a *App) runDepAdd(ctx context.Context, args []string) error {
 	jsonOut := fs.Bool("json", false, "output JSON")
 
 	actorFlag := fs.String("actor", "", "actor override")
-	if err := fs.Parse(args[2:]); err != nil {
+
+	err = fs.Parse(args[2:])
+	if err != nil {
 		return err
 	}
 
@@ -817,7 +844,7 @@ func (a *App) runDepRemove(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer closeStore(s)
 
 	if len(args) < 2 {
 		return errors.New("usage: tack dep remove <blocked-id> <blocker-id>")
@@ -828,7 +855,9 @@ func (a *App) runDepRemove(ctx context.Context, args []string) error {
 	fs.SetOutput(a.stderr)
 
 	actorFlag := fs.String("actor", "", "actor override")
-	if err := fs.Parse(args[2:]); err != nil {
+
+	err = fs.Parse(args[2:])
+	if err != nil {
 		return err
 	}
 
@@ -841,7 +870,8 @@ func (a *App) runDepRemove(ctx context.Context, args []string) error {
 		return err
 	}
 
-	if err := s.RemoveDependency(ctx, blockedID, blockerID, actor); err != nil {
+	err = s.RemoveDependency(ctx, blockedID, blockerID, actor)
+	if err != nil {
 		return err
 	}
 
@@ -855,7 +885,7 @@ func (a *App) runDepList(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer closeStore(s)
 
 	if len(args) == 0 {
 		return errors.New("usage: tack dep list <id>")
@@ -866,7 +896,9 @@ func (a *App) runDepList(ctx context.Context, args []string) error {
 	fs.SetOutput(a.stderr)
 
 	jsonOut := fs.Bool("json", false, "output JSON")
-	if err := fs.Parse(args[1:]); err != nil {
+
+	err = fs.Parse(args[1:])
+	if err != nil {
 		return err
 	}
 
@@ -890,7 +922,7 @@ func (a *App) runDepList(ctx context.Context, args []string) error {
 
 func (a *App) runLabels(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tack labels add|remove|list ...")
+		return errors.New("usage: tack labels add|remove|list")
 	}
 
 	switch args[0] {
@@ -910,7 +942,7 @@ func (a *App) runLabelsAdd(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer closeStore(s)
 
 	if len(args) == 0 {
 		return errors.New("usage: tack labels add <id> <label> [label...]")
@@ -922,7 +954,9 @@ func (a *App) runLabelsAdd(ctx context.Context, args []string) error {
 	jsonOut := fs.Bool("json", false, "output JSON")
 
 	actorFlag := fs.String("actor", "", "actor override")
-	if err := fs.Parse(args[1:]); err != nil {
+
+	err = fs.Parse(args[1:])
+	if err != nil {
 		return err
 	}
 
@@ -954,7 +988,7 @@ func (a *App) runLabelsRemove(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer closeStore(s)
 
 	if len(args) == 0 {
 		return errors.New("usage: tack labels remove <id> <label> [label...]")
@@ -966,7 +1000,9 @@ func (a *App) runLabelsRemove(ctx context.Context, args []string) error {
 	jsonOut := fs.Bool("json", false, "output JSON")
 
 	actorFlag := fs.String("actor", "", "actor override")
-	if err := fs.Parse(args[1:]); err != nil {
+
+	err = fs.Parse(args[1:])
+	if err != nil {
 		return err
 	}
 
@@ -998,7 +1034,7 @@ func (a *App) runLabelsList(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer closeStore(s)
 
 	if len(args) == 0 {
 		return errors.New("usage: tack labels list <id>")
@@ -1009,7 +1045,9 @@ func (a *App) runLabelsList(ctx context.Context, args []string) error {
 	fs.SetOutput(a.stderr)
 
 	jsonOut := fs.Bool("json", false, "output JSON")
-	if err := fs.Parse(args[1:]); err != nil {
+
+	err = fs.Parse(args[1:])
+	if err != nil {
 		return err
 	}
 
@@ -1036,13 +1074,15 @@ func (a *App) runExport(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer closeStore(s)
 
 	fs := flag.NewFlagSet("export", flag.ContinueOnError)
 	fs.SetOutput(a.stderr)
 
 	jsonOut := fs.Bool("json", true, "output JSON")
-	if err := fs.Parse(args); err != nil {
+
+	err = fs.Parse(args)
+	if err != nil {
 		return err
 	}
 
@@ -1093,7 +1133,8 @@ func openRepoStore() (string, *store.Store, error) {
 		return "", nil, err
 	}
 
-	if err := store.EnsureInitialized(repoRoot); err != nil {
+	err = store.EnsureInitialized(repoRoot)
+	if err != nil {
 		return "", nil, err
 	}
 
@@ -1161,12 +1202,15 @@ func printIssueDetail(w io.Writer, issue issues.Issue) error {
 
 func printIssueTable(w io.Writer, all []issues.Issue) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "ID\tSTATUS\tTYPE\tPRIORITY\tTITLE"); err != nil {
+
+	_, err := fmt.Fprintln(tw, "ID\tSTATUS\tTYPE\tPRIORITY\tTITLE")
+	if err != nil {
 		return err
 	}
 
 	for _, issue := range all {
-		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", issue.ID, issue.Status, issue.Type, issue.Priority, issue.Title); err != nil {
+		_, err = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", issue.ID, issue.Status, issue.Type, issue.Priority, issue.Title)
+		if err != nil {
 			return err
 		}
 	}
@@ -1174,8 +1218,8 @@ func printIssueTable(w io.Writer, all []issues.Issue) error {
 	return tw.Flush()
 }
 
-func (a *App) printUsage() {
-	fmt.Fprintln(a.stdout, `tack commands:
+func (a *App) printUsage() error {
+	_, err := fmt.Fprintln(a.stdout, `tack commands:
   tack init
   tack create
   tack show <id>
@@ -1190,6 +1234,15 @@ func (a *App) printUsage() {
   tack skill install
   tack labels add|remove|list
   tack export --json`)
+
+	return err
+}
+
+func closeStore(s *store.Store) {
+	err := s.Close()
+	if err != nil {
+		return
+	}
 }
 
 type multiFlag struct {

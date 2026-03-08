@@ -32,7 +32,9 @@ func Load(repoRoot string) (Config, error) {
 	}
 
 	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
+
+	err = json.Unmarshal(data, &cfg)
+	if err != nil {
 		return Config{}, err
 	}
 
@@ -41,7 +43,9 @@ func Load(repoRoot string) (Config, error) {
 
 func WriteDefault(repoRoot string) error {
 	path := Path(repoRoot)
-	if _, err := os.Stat(path); err == nil {
+
+	_, err := os.Stat(path)
+	if err == nil {
 		return nil
 	}
 

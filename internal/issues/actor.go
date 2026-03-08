@@ -35,7 +35,9 @@ func ResolveActor(repoRoot, explicit string) (string, error) {
 	var stdout bytes.Buffer
 
 	cmd.Stdout = &stdout
-	if err := cmd.Run(); err == nil {
+
+	err = cmd.Run()
+	if err == nil {
 		if v := strings.TrimSpace(stdout.String()); v != "" {
 			return v, nil
 		}

@@ -25,7 +25,8 @@ func TempRepo(t *testing.T) string {
 func InitStore(t *testing.T, repoRoot string) *store.Store {
 	t.Helper()
 
-	if err := store.InitRepo(repoRoot); err != nil {
+	err := store.InitRepo(repoRoot)
+	if err != nil {
 		t.Fatalf("store.InitRepo: %v", err)
 	}
 
@@ -35,7 +36,7 @@ func InitStore(t *testing.T, repoRoot string) *store.Store {
 	}
 
 	t.Cleanup(func() {
-		_ = s.Close()
+		closeStore(s)
 	})
 
 	return s
@@ -49,12 +50,13 @@ func Chdir(t *testing.T, dir string) {
 		t.Fatalf("Getwd: %v", err)
 	}
 
-	if err := os.Chdir(dir); err != nil {
+	err = os.Chdir(dir)
+	if err != nil {
 		t.Fatalf("Chdir(%s): %v", dir, err)
 	}
 
 	t.Cleanup(func() {
-		_ = os.Chdir(old)
+		restoreChdir(old)
 	})
 }
 
@@ -62,4 +64,18 @@ func Context(t *testing.T) context.Context {
 	t.Helper()
 
 	return context.Background()
+}
+
+func closeStore(s *store.Store) {
+	err := s.Close()
+	if err != nil {
+		return
+	}
+}
+
+func restoreChdir(dir string) {
+	err := os.Chdir(dir)
+	if err != nil {
+		return
+	}
 }

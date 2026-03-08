@@ -11,11 +11,14 @@ import (
 
 func TestResolveActorOrder(t *testing.T) {
 	repo := testutil.TempRepo(t)
-	if err := os.MkdirAll(repo+"/.tack", 0o755); err != nil {
+
+	err := os.MkdirAll(repo+"/.tack", 0o755)
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := config.WriteDefault(repo); err != nil {
+	err = config.WriteDefault(repo)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -43,7 +46,8 @@ func TestResolveActorOrder(t *testing.T) {
 
 	t.Setenv("TACK_ACTOR", "")
 
-	if err := os.WriteFile(config.Path(repo), []byte("{\n  \"actor\": \"config-actor\"\n}\n"), 0o644); err != nil {
+	err = os.WriteFile(config.Path(repo), []byte("{\n  \"actor\": \"config-actor\"\n}\n"), 0o644)
+	if err != nil {
 		t.Fatal(err)
 	}
 
