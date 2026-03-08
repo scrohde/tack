@@ -24,7 +24,7 @@
 
 - `go build -o tack ./cmd/tack`
 - `go test ./...`
-- `golangci-lint run --fix`
+- `mkdir -p /tmp/go-build-cache /tmp/golangci-lint-cache && GOCACHE=/tmp/go-build-cache GOLANGCI_LINT_CACHE=/tmp/golangci-lint-cache golangci-lint run --fix`
 - `go run ./cmd/tack --help`
 - `go generate ./internal/skill`
 
@@ -43,3 +43,4 @@
 
 - `internal/testutil` contains temp-repo helpers used by CLI and store tests.
 - Prefer focused test coverage near the package you changed, then run `go test ./...`.
+- Run `golangci-lint` with `GOCACHE=/tmp/go-build-cache` and `GOLANGCI_LINT_CACHE=/tmp/golangci-lint-cache` to avoid sandbox permission errors writing to `~/Library/Caches`.
