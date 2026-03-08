@@ -30,17 +30,17 @@ Build the CLI:
 go build -o tack ./cmd/tack
 ```
 
+Or install it onto your `PATH`:
+
+```bash
+go install ./cmd/tack
+```
+
 Run it from anywhere inside a Git worktree:
 
 ```bash
-./tack help
-./tack init
-```
-
-You can also run it without building a binary:
-
-```bash
-go run ./cmd/tack --help
+tack help
+tack init
 ```
 
 Initialization creates:
@@ -49,7 +49,7 @@ Initialization creates:
 - `.tack/config.json`
 - `.tack/.gitignore`
 
-`tack init` keeps ignore rules inside `.tack/`, so adopters do not need to edit the repo root
+`tack init` keeps ignore rules inside `.tack/`, so you do not need to edit the repo root
 `.gitignore`.
 
 ## Actor Resolution
@@ -64,66 +64,38 @@ Write operations need an actor. `tack` resolves it in this order:
 
 ## Typical Workflow
 
-Initialize the repo-local database:
+Install `tack` somewhere on your `PATH`, then work from inside the target Git repository.
+
+Initialize the repo-local database once per repo:
 
 ```bash
-./tack init
+tack init
 ```
 
-Install the tack agent skill into the current repo by default:
+Install the tack agent skill into that repo:
 
 ```bash
-./tack skill install
+tack skill install
 ```
 
-Create work:
+Create a plan for the code changes you want to make. In practice, this often means using a coding
+agent to help draft the implementation plan before any tack items are created.
 
-```bash
-./tack create \
-  --title "Add README.md" \
-  --type task \
-  --priority medium \
-  --description "Document the project" \
-  --json
-```
+Convert that plan into detailed tacks so the work can be handed off cleanly across different agent
+sessions or different agents. The coding agent will do this for you with a prompt like:
 
-See what is ready to work:
+    Create tacks from the plan being careful to not miss any details. Be explicit about scope, dependencies, and acceptance details so the resulting tasks are implementation-ready.
 
-```bash
-./tack ready --json
-```
+Once the plan has been fully decomposed into tacks, start a fresh agent session and ask it to:
 
-Claim an issue and move it to `in_progress`:
+    Implement 1 or 2 ready issues from tack.
 
-```bash
-./tack update tk-1 --claim --json
-```
+For best results, have the agent implement a small set of issues per session.  This keeps context to a minimum and helps you verify the work being done.
 
-Inspect or edit it:
-
-```bash
-./tack show tk-1
-./tack edit tk-1
-./tack update tk-1 --priority high --assignee "" --json
-```
-
-Track dependencies, labels, and comments:
-
-```bash
-./tack dep add tk-2 tk-1
-./tack labels add tk-1 docs cli
-./tack comment add tk-1 --body "Implementation started"
-```
-
-Close completed work:
-
-```bash
-./tack close tk-1 --reason "README added" --json
-```
-
-## Command Reference
+## Command Reference (each subcommand has its own --help output)
 
 ```text
+tack help
 tack init
 tack create
 tack show <id>
@@ -143,8 +115,8 @@ tack export --json
 Useful list filters:
 
 ```bash
-./tack list --status open --type bug --label backend --limit 20
-./tack ready --assignee alice --json
+tack list --status open --type bug --label backend --limit 20
+tack ready --assignee alice --json
 ```
 
 ## Development
