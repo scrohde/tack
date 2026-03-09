@@ -39,7 +39,7 @@ func TestInitCreatesRepoState(t *testing.T) {
 		t.Fatalf(".gitignore missing: %v", err)
 	}
 
-	if string(got) != "*\n!.gitignore\n" {
+	if string(got) != "*\n" {
 		t.Fatalf("unexpected .tack/.gitignore: %q", string(got))
 	}
 
@@ -103,7 +103,10 @@ func TestSkillInstallModes(t *testing.T) {
 
 	repoSkillDir := filepath.Join(repo, ".agents", "skills", "tack")
 	repoTarget := filepath.Join(repo, ".agents", "skills", "tack", "SKILL.md")
+	repoGitignore := filepath.Join(repo, ".agents", ".gitignore")
+
 	assertFileHasContent(t, repoTarget)
+	assertExactFileContent(t, repoGitignore, "*\n")
 
 	if got := stringField(t, repoInstall, "installed_skill_dir"); canonicalPath(t, got) != canonicalPath(t, repoSkillDir) {
 		t.Fatalf("unexpected repo installed skill dir: %#v", repoInstall)
@@ -123,7 +126,10 @@ func TestSkillInstallModes(t *testing.T) {
 
 	homeSkillDir := filepath.Join(homeDir, ".agents", "skills", "tack")
 	homeTarget := filepath.Join(homeDir, ".agents", "skills", "tack", "SKILL.md")
+	homeGitignore := filepath.Join(homeDir, ".agents", ".gitignore")
+
 	assertFileHasContent(t, homeTarget)
+	assertExactFileContent(t, homeGitignore, "*\n")
 
 	if got := stringField(t, homeInstall, "installed_skill_dir"); canonicalPath(t, got) != canonicalPath(t, homeSkillDir) {
 		t.Fatalf("unexpected home installed skill dir: %#v", homeInstall)
@@ -292,6 +298,19 @@ func assertFileHasContent(t *testing.T, path string) {
 
 	if !strings.Contains(string(data), "tack agent workflow") {
 		t.Fatalf("unexpected skill contents in %s: %q", path, string(data))
+	}
+}
+
+func assertExactFileContent(t *testing.T, path, want string) {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+
+	if string(data) != want {
+		t.Fatalf("unexpected file contents in %s: got %q want %q", path, string(data), want)
 	}
 }
 

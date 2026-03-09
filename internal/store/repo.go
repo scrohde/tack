@@ -43,6 +43,8 @@ func gitignorePath(repoRoot string) string {
 	return filepath.Join(repoRoot, ".tack", ".gitignore")
 }
 
+const ignoreAllContents = "*\n"
+
 func InitRepo(repoRoot string) error {
 	dir := filepath.Join(repoRoot, ".tack")
 
@@ -79,7 +81,7 @@ func ensureTackGitignore(repoRoot string) error {
 		return err
 	}
 
-	return os.WriteFile(path, []byte("*\n!.gitignore\n"), 0o644)
+	return os.WriteFile(path, []byte(ignoreAllContents), 0o644)
 }
 
 func EnsureInitialized(repoRoot string) error {

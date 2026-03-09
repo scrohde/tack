@@ -20,7 +20,8 @@ func TestTackSkillBundleMatchesSource(t *testing.T) {
 }
 
 func TestInstallTackSkillOverwritesExistingFile(t *testing.T) {
-	root := t.TempDir()
+	parent := t.TempDir()
+	root := filepath.Join(parent, "skills")
 
 	targetDir := filepath.Join(root, TackSkillName)
 
@@ -60,5 +61,45 @@ func TestInstallTackSkillOverwritesExistingFile(t *testing.T) {
 
 	if string(got) != TackSkillContent {
 		t.Fatalf("unexpected installed content: %q", string(got))
+	}
+
+	agentsGitignore, err := os.ReadFile(filepath.Join(parent, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read .agents/.gitignore: %v", err)
+	}
+
+	if string(agentsGitignore) != "*\n" {
+		t.Fatalf("unexpected .agents/.gitignore: %q", string(agentsGitignore))
+	}
+}
+
+func TestInstallTackSkillPreservesExistingAgentsGitignore(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "skills")
+
+	err := os.MkdirAll(root, 0o755)
+	if err != nil {
+		t.Fatalf("mkdir skills root: %v", err)
+	}
+
+	const customContent = "custom\n"
+
+	err = os.WriteFile(filepath.Join(parent, ".gitignore"), []byte(customContent), 0o644)
+	if err != nil {
+		t.Fatalf("write .agents/.gitignore: %v", err)
+	}
+
+	_, err = InstallTackSkill(root)
+	if err != nil {
+		t.Fatalf("InstallTackSkill: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(parent, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read .agents/.gitignore: %v", err)
+	}
+
+	if string(got) != customContent {
+		t.Fatalf("expected existing .agents/.gitignore to be preserved, got %q", string(got))
 	}
 }

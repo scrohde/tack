@@ -52,6 +52,11 @@ Initialization creates:
 `tack init` keeps ignore rules inside `.tack/`, so you do not need to edit the repo root
 `.gitignore`.
 
+Repo-local skill installs also create `.agents/.gitignore`, so both `.tack/` and `.agents/`
+stay fully ignored by Git.
+
+If you ever want to cleanly remove tack, remove `.tack` and `.agents/skills/tack`.
+
 ## Actor Resolution
 
 Write operations need an actor. `tack` resolves it in this order:
@@ -84,7 +89,7 @@ agent to help draft the implementation plan before any tack items are created.
 Convert that plan into detailed tacks so the work can be handed off cleanly across different agent
 sessions or different agents. The coding agent will do this for you with a prompt like:
 
-    Create tacks from the plan being careful to not miss any details. Be explicit about scope, dependencies, and acceptance details so the resulting tasks are implementation-ready.
+    Create tacks from the plan, be careful to not miss any details. Be explicit about scope, dependencies, and acceptance details so the resulting tasks can be handed off to another agent and be implementation-ready.
 
 Once the plan has been fully decomposed into tacks, start a fresh agent session and ask it to:
 
