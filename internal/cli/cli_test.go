@@ -218,6 +218,69 @@ func TestCreateClaimReadyCloseAndCommentJSON(t *testing.T) {
 	}
 }
 
+func TestReadyExcludesParentsWithOpenChildrenJSON(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+	t.Setenv("TACK_ACTOR", "alice")
+
+	runCLI(t, repo, "init")
+
+	parent := createIssue(t, repo, []string{
+		"create",
+		"--title", "parent",
+		"--type", "task",
+		"--priority", "medium",
+		"--description", "body",
+		"--json",
+	})
+	child := createIssue(t, repo, []string{
+		"create",
+		"--title", "child",
+		"--type", "task",
+		"--priority", "medium",
+		"--description", "body",
+		"--parent", stringField(t, parent, "id"),
+		"--json",
+	})
+	standalone := createIssue(t, repo, []string{
+		"create",
+		"--title", "standalone",
+		"--type", "task",
+		"--priority", "medium",
+		"--description", "body",
+		"--json",
+	})
+
+	ready := runJSON[[]map[string]any](t, repo, "ready", "--json")
+	if len(ready) != 2 || ready[0]["id"] != child["id"] || ready[1]["id"] != standalone["id"] {
+		t.Fatalf("unexpected ready set with open child: %#v", ready)
+	}
+
+	listed := runJSON[[]map[string]any](t, repo, "list", "--json")
+	if len(listed) != 3 || listed[0]["id"] != parent["id"] {
+		t.Fatalf("expected parent to remain visible in list output, got %#v", listed)
+	}
+
+	shown := runJSON[map[string]any](t, repo, "show", stringField(t, parent, "id"), "--json")
+	if shown["id"] != parent["id"] {
+		t.Fatalf("expected parent to remain visible in show output, got %#v", shown)
+	}
+
+	exported := runJSON[map[string]any](t, repo, "export", "--json")
+
+	exportedIssues, ok := exported["issues"].([]any)
+	if !ok || len(exportedIssues) != 3 {
+		t.Fatalf("expected parent to remain visible in export output, got %#v", exported)
+	}
+
+	runJSON[map[string]any](t, repo, "close", stringField(t, child, "id"), "--reason", "done", "--json")
+
+	ready = runJSON[[]map[string]any](t, repo, "ready", "--json")
+	if len(ready) != 2 || ready[0]["id"] != parent["id"] || ready[1]["id"] != standalone["id"] {
+		t.Fatalf("unexpected ready set after child close: %#v", ready)
+	}
+}
+
 func createIssue(t *testing.T, repo string, args []string) map[string]any {
 	t.Helper()
 

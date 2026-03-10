@@ -139,6 +139,84 @@ func TestReadyFilteringAndCloseUnblocks(t *testing.T) {
 	}
 }
 
+func TestReadyExcludesParentsWithOpenChildren(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	parent, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "parent",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	child, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "child",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+		ParentID:    parent.ID,
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	standalone, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "standalone",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ready, err := s.ReadyIssues(ctx, store.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(ready) != 2 || ready[0].ID != child.ID || ready[1].ID != standalone.ID {
+		t.Fatalf("unexpected ready set with open child: %#v", ready)
+	}
+
+	listed, err := s.ListIssues(ctx, store.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(listed) != 3 || listed[0].ID != parent.ID {
+		t.Fatalf("expected parent to remain visible in list results, got %#v", listed)
+	}
+
+	exported, err := s.Export(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(exported.Issues) != 3 || exported.Issues[0].ID != parent.ID {
+		t.Fatalf("expected parent to remain visible in export, got %#v", exported.Issues)
+	}
+
+	_, err = s.CloseIssue(ctx, child.ID, "done", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ready, err = s.ReadyIssues(ctx, store.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(ready) != 2 || ready[0].ID != parent.ID || ready[1].ID != standalone.ID {
+		t.Fatalf("unexpected ready set after child closed: %#v", ready)
+	}
+}
+
 func TestDependencyCycleRejected(t *testing.T) {
 	ctx := testutil.Context(t)
 	repo := testutil.TempRepo(t)
