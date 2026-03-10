@@ -1231,7 +1231,7 @@ func (a *App) printUsage() error {
   tack reopen <id>
   tack comment add|list
   tack dep add|remove|list
-  tack skill install
+  tack skill install [--home|--path <dir>]
   tack labels add|remove|list
   tack export --json`)
 

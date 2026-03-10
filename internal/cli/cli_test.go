@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -97,65 +98,50 @@ func TestSkillInstallModes(t *testing.T) {
 	testutil.Chdir(t, repo)
 
 	repoInstall := runJSON[map[string]any](t, repo, "skill", "install", "--json")
-	if repoInstall["mode"] != "repo" {
-		t.Fatalf("unexpected repo install mode: %#v", repoInstall)
-	}
-
 	repoSkillDir := filepath.Join(repo, ".agents", "skills", "tack")
 	repoTarget := filepath.Join(repo, ".agents", "skills", "tack", "SKILL.md")
 	repoGitignore := filepath.Join(repo, ".agents", ".gitignore")
 
+	assertInstallJSON(t, repoInstall, "repo", filepath.Join(repo, ".agents", "skills"), repoSkillDir, repoTarget)
 	assertFileHasContent(t, repoTarget)
 	assertExactFileContent(t, repoGitignore, "*\n")
-
-	if got := stringField(t, repoInstall, "installed_skill_dir"); canonicalPath(t, got) != canonicalPath(t, repoSkillDir) {
-		t.Fatalf("unexpected repo installed skill dir: %#v", repoInstall)
-	}
-
-	if got := stringField(t, repoInstall, "installed_path"); canonicalPath(t, got) != canonicalPath(t, repoTarget) {
-		t.Fatalf("unexpected repo installed path: %#v", repoInstall)
-	}
 
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
 
 	homeInstall := runJSON[map[string]any](t, repo, "skill", "install", "--home", "--json")
-	if homeInstall["mode"] != "home" {
-		t.Fatalf("unexpected home install mode: %#v", homeInstall)
-	}
-
 	homeSkillDir := filepath.Join(homeDir, ".agents", "skills", "tack")
 	homeTarget := filepath.Join(homeDir, ".agents", "skills", "tack", "SKILL.md")
 	homeGitignore := filepath.Join(homeDir, ".agents", ".gitignore")
 
+	assertInstallJSON(t, homeInstall, "home", filepath.Join(homeDir, ".agents", "skills"), homeSkillDir, homeTarget)
 	assertFileHasContent(t, homeTarget)
 	assertExactFileContent(t, homeGitignore, "*\n")
-
-	if got := stringField(t, homeInstall, "installed_skill_dir"); canonicalPath(t, got) != canonicalPath(t, homeSkillDir) {
-		t.Fatalf("unexpected home installed skill dir: %#v", homeInstall)
-	}
-
-	if got := stringField(t, homeInstall, "installed_path"); canonicalPath(t, got) != canonicalPath(t, homeTarget) {
-		t.Fatalf("unexpected home installed path: %#v", homeInstall)
-	}
 
 	customRoot := filepath.Join(t.TempDir(), "custom-skills")
 
 	customInstall := runJSON[map[string]any](t, repo, "skill", "install", "--path", customRoot, "--json")
-	if customInstall["mode"] != "path" {
-		t.Fatalf("unexpected custom install mode: %#v", customInstall)
-	}
-
 	customSkillDir := filepath.Join(customRoot, "tack")
 	customTarget := filepath.Join(customRoot, "tack", "SKILL.md")
-	assertFileHasContent(t, customTarget)
 
-	if got := stringField(t, customInstall, "installed_skill_dir"); canonicalPath(t, got) != canonicalPath(t, customSkillDir) {
-		t.Fatalf("unexpected custom installed skill dir: %#v", customInstall)
+	assertInstallJSON(t, customInstall, "path", customRoot, customSkillDir, customTarget)
+	assertFileHasContent(t, customTarget)
+}
+
+func TestSkillInstallPlaintextOutput(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+
+	out, err := runCLIBytes(repo, "skill", "install")
+	if err != nil {
+		t.Fatalf("skill install failed: %v", err)
 	}
 
-	if got := stringField(t, customInstall, "installed_path"); canonicalPath(t, got) != canonicalPath(t, customTarget) {
-		t.Fatalf("unexpected custom installed path: %#v", customInstall)
+	wantPath := canonicalPath(t, filepath.Join(repo, ".agents", "skills", "tack", "SKILL.md"))
+
+	wantLine := "installed tack skill to " + wantPath + "\n"
+	if string(out) != wantLine {
+		t.Fatalf("unexpected install output: got %q want %q", string(out), wantLine)
 	}
 }
 
@@ -344,4 +330,47 @@ func canonicalPath(t *testing.T, path string) string {
 	}
 
 	return abs
+}
+
+func assertInstallJSON(t *testing.T, data map[string]any, mode, skillsRoot, skillDir, skillPath string) {
+	t.Helper()
+
+	wantKeys := []string{
+		"installed_path",
+		"installed_skill_dir",
+		"mode",
+		"skill_name",
+		"skills_root",
+	}
+
+	gotKeys := make([]string, 0, len(data))
+	for key := range data {
+		gotKeys = append(gotKeys, key)
+	}
+
+	sort.Strings(gotKeys)
+
+	if strings.Join(gotKeys, ",") != strings.Join(wantKeys, ",") {
+		t.Fatalf("unexpected install json keys: got %v want %v", gotKeys, wantKeys)
+	}
+
+	if data["mode"] != mode {
+		t.Fatalf("unexpected install mode: %#v", data)
+	}
+
+	if data["skill_name"] != "tack" {
+		t.Fatalf("unexpected skill name: %#v", data)
+	}
+
+	if got := stringField(t, data, "skills_root"); canonicalPath(t, got) != canonicalPath(t, skillsRoot) {
+		t.Fatalf("unexpected skills root: %#v", data)
+	}
+
+	if got := stringField(t, data, "installed_skill_dir"); canonicalPath(t, got) != canonicalPath(t, skillDir) {
+		t.Fatalf("unexpected installed skill dir: %#v", data)
+	}
+
+	if got := stringField(t, data, "installed_path"); canonicalPath(t, got) != canonicalPath(t, skillPath) {
+		t.Fatalf("unexpected installed path: %#v", data)
+	}
 }

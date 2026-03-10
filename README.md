@@ -43,14 +43,14 @@ tack help
 tack init
 ```
 
-Initialization creates:
+Initialization creates only repo-local tack state:
 
 - `.tack/issues.db`
 - `.tack/config.json`
 - `.tack/.gitignore`
 
 `tack init` keeps ignore rules inside `.tack/`, so you do not need to edit the repo root
-`.gitignore`.
+`.gitignore`. It does not install any agent skill content.
 
 Repo-local skill installs also create `.agents/.gitignore`, so both `.tack/` and `.agents/`
 stay fully ignored by Git.
@@ -83,6 +83,14 @@ Install the tack agent skill into that repo:
 tack skill install
 ```
 
+The install target is explicit:
+
+- `tack skill install` installs to `<repo>/.agents/skills/tack`
+- `tack skill install --home` installs to `$HOME/.agents/skills/tack`
+- `tack skill install --path /tmp/skills` installs to `/tmp/skills/tack`
+
+The repo-local mode is the default and is separate from `tack init`.
+
 Create a plan for the code changes you want to make. In practice, this often means using a coding
 agent to help draft the implementation plan before any tack items are created.
 
@@ -112,7 +120,7 @@ tack close <id>
 tack reopen <id>
 tack comment add|list
 tack dep add|remove|list
-tack skill install
+tack skill install [--home|--path <dir>]
 tack labels add|remove|list
 tack export --json
 ```
