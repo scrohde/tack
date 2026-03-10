@@ -1,89 +1,129 @@
 # tack
 
-`tack` is a local-first issue tracker for a single Git repository. It stores issues, comments,
-dependencies, labels, and audit events in a repo-local SQLite database at `.tack/issues.db` and
-exposes a scriptable CLI with JSON output for automation.
+`tack` is a tiny local issue tracker for people who like working with coding agents without losing the plot.
 
-## Status
+Instead of keeping the whole plan in one giant chat, you turn the plan into durable repo-local tasks, complete with parent/child structure, dependencies, notes, and history. The human decides what should happen. The agent helps plan it, break it apart, and execute it one ready task at a time.
 
-The current implementation supports:
+## What It Feels Like
 
-- repo initialization with `tack init`
-- issue creation, listing, show, update, edit, close, and reopen
-- manifest-driven bulk issue import with `tack import --file manifest.json`
-- ready-work filtering with `tack ready`
-- comments, labels, and dependency management
-- concurrent read-heavy automation across separate tack processes for commands like `tack ready` and `tack export --json`
-- JSON export with `tack export --json`
+The usual human workflow looks like this:
 
-Issue IDs use the form `tk-1`, `tk-2`, and so on.
+1. Ask an agent to help plan a project or feature.
+2. Review the plan until it actually makes sense.
+3. Ask the agent to convert that plan into tacks without dropping details.
+4. Let the agent work from the ready queue in small, reviewable chunks.
 
-## Requirements
+That middle step is the important one. You do not want a vague todo list. You want implementation-ready tasks with:
+
+- clear scope
+- parent-child relationships
+- blockers and dependencies
+- labels and notes
+- enough detail that a fresh agent session can pick up the work cleanly
+
+In other words: plan once, decompose carefully, execute calmly.
+
+## Why Use It
+
+`tack` is useful when you want:
+
+- repo-local task tracking instead of another hosted tool
+- a clean handoff point between planning mode and execution mode
+- agents to work in the right order instead of freestyle improvisation
+- an audit trail of what changed, what got blocked, and what got closed
+
+Everything lives in the repository at `.tack/issues.db`, so the work stays close to the code.
+
+## Typical Human Workflow
+
+Install `tack`, go to the repository you care about, and initialize it once:
+
+```bash
+tack init
+```
+
+If you want the repo-local agent instructions installed too:
+
+```bash
+tack skill install
+```
+
+Then use an agent in planning mode to build the actual project plan. Once the plan is solid, ask for the conversion step explicitly. A good prompt is:
+
+> Create tack issues from this plan. Do not lose details. Preserve scope, acceptance criteria, parent-child relationships, and dependencies so the work can be executed in the right order by a later agent session.
+
+After that, you can start a fresh implementation-focused session and say:
+
+> Implement 1 or 2 ready issues from tack.
+
+That keeps the execution agent narrow, focused, and much easier to review.
+
+## A Simple Loop
+
+```bash
+tack ready --json --summary
+tack show <id> --json
+tack update <id> --claim --json
+```
+
+That is the core loop:
+
+- ask tack what is ready
+- inspect the exact issue to work on
+- claim it before changing things
+
+When the agent discovers new work, it can create follow-up tacks with the right parent and dependency links instead of burying that context in chat.
+
+## Features That Matter For Agent Work
+
+- `tack import --file manifest.json` can create a whole plan worth of issues in one pass
+- `tack ready` hides parent issues that still have open children
+- `tack list --json --summary` and `tack ready --json --summary` give compact automation-friendly output
+- comments, labels, and dependency links make handoffs much cleaner
+- read-heavy tack commands can safely overlap across separate processes
+
+Issue IDs look like `tk-1`, `tk-2`, and so on.
+
+## Getting Started
+
+Requirements:
 
 - Go 1.26 or newer
-- a Git repository; `tack` discovers the repo root by walking up to `.git`
-- `$EDITOR` set if you want interactive editing for long descriptions or `tack edit`
+- a Git repository
+- `$EDITOR` if you want interactive editing
 
-## Build And Run
-
-Build the CLI:
+Build it:
 
 ```bash
 go build -o tack ./cmd/tack
 ```
 
-Or install it onto your `PATH`:
+Or install it:
 
 ```bash
 go install ./cmd/tack
 ```
 
-Run it from anywhere inside a Git worktree:
+Run it anywhere inside the repo:
 
 ```bash
 tack help
 tack init
 ```
 
-Initialization creates only repo-local tack state:
+Initialization creates only repo-local state:
 
 - `.tack/issues.db`
 - `.tack/config.json`
 - `.tack/.gitignore`
 
-`tack init` keeps ignore rules inside `.tack/`, so you do not need to edit the repo root
-`.gitignore`. It does not install any agent skill content.
+`tack init` keeps its ignore rules inside `.tack/`, so you do not need to edit the repo root `.gitignore`.
 
-Repo-local skill installs also create `.agents/.gitignore`, so both `.tack/` and `.agents/`
-stay fully ignored by Git.
+If you install the tack skill into the repo, tack also creates `.agents/.gitignore` so local agent instructions stay out of version control too.
 
-If you ever want to cleanly remove tack, remove `.tack` and `.agents/skills/tack`.
+If you ever want to remove tack cleanly, delete `.tack` and `.agents/skills/tack`.
 
-## Actor Resolution
-
-Write operations need an actor. `tack` resolves it in this order:
-
-1. `--actor`
-2. `TACK_ACTOR`
-3. `.tack/config.json`
-4. `git config user.name`
-5. the current OS username
-
-## Typical Workflow
-
-Install `tack` somewhere on your `PATH`, then work from inside the target Git repository.
-
-Initialize the repo-local database once per repo:
-
-```bash
-tack init
-```
-
-Install the tack agent skill into that repo:
-
-```bash
-tack skill install
-```
+## Skill Install Locations
 
 The install target is explicit:
 
@@ -91,23 +131,9 @@ The install target is explicit:
 - `tack skill install --home` installs to `$HOME/.agents/skills/tack`
 - `tack skill install --path /tmp/skills` installs to `/tmp/skills/tack`
 
-The repo-local mode is the default and is separate from `tack init`.
+This is separate from `tack init` on purpose.
 
-Create a plan for the code changes you want to make. In practice, this often means using a coding
-agent to help draft the implementation plan before any tack items are created.
-
-Convert that plan into detailed tacks so the work can be handed off cleanly across different agent
-sessions or different agents. The coding agent will do this for you with a prompt like:
-
-    Create tacks from the plan, be careful to not miss any details. Be explicit about scope, dependencies, and acceptance details so the resulting tasks can be handed off to another agent and be implementation-ready.
-
-Once the plan has been fully decomposed into tacks, start a fresh agent session and ask it to:
-
-    Implement 1 or 2 ready issues from tack.
-
-For best results, have the agent implement a small set of issues per session.  This keeps context to a minimum and helps you verify the work being done.
-
-## Command Reference (each subcommand has its own --help output)
+## Commands
 
 ```text
 tack help
@@ -128,46 +154,38 @@ tack labels add|remove|list
 tack export --json
 ```
 
-Useful list filters:
+Useful examples:
 
 ```bash
-tack list --status open --type bug --label backend --limit 20
-tack ready --assignee alice --json
 tack list --json --summary
 tack ready --json --summary
-```
-
-`tack ready` only returns unassigned open issues whose blockers are closed, whose defer time has
-passed, and which do not have open children. Parent issues stay visible in `tack list`, `tack show`,
-and `tack export --json`; they simply leave the ready queue until all children close.
-
-Both `tack list` and `tack ready` support `--json --summary` for a compact issue payload with
-labels, blockers, and open-child IDs. `--summary` always requires `--json`.
-
-Subcommand help is available both ways:
-
-```bash
-tack ready --help
+tack list --status open --type bug --label backend --limit 20
+tack ready --assignee alice --json
 tack help ready
+tack ready --help
 ```
 
-Manifest import is JSON-only in v1:
+`--summary` requires `--json`.
+
+## Manifest Import
+
+If the agent already has a finished plan, importing a manifest is the fastest way to create a real dependency graph:
 
 ```json
 {
   "issues": [
     {
       "id": "epic",
-      "title": "Agent workflow follow-up",
+      "title": "Ship the feature",
       "type": "epic",
       "priority": "high"
     },
     {
-      "id": "task",
-      "title": "Implement the importer",
+      "id": "backend",
+      "title": "Build the API work",
       "parent": "epic",
       "depends_on": ["tests"],
-      "labels": ["automation"]
+      "labels": ["backend"]
     },
     {
       "id": "tests",
@@ -185,18 +203,22 @@ tack import --file manifest.json
 tack import --file manifest.json --json
 ```
 
-The manifest `id`, `parent`, and `depends_on` fields are manifest-local aliases. Import creates
-all issues and links atomically, defaults omitted `type` values to `task`, defaults omitted
-`priority` values to `medium`, and returns `created_ids` plus an `alias_map` in JSON mode.
+The manifest-local `id`, `parent`, and `depends_on` values are aliases used to wire the graph together. Omitted `type` values default to `task`, and omitted `priority` values default to `medium`.
+
+## Actor Resolution
+
+Write operations need an actor name. `tack` resolves it in this order:
+
+1. `--actor`
+2. `TACK_ACTOR`
+3. `.tack/config.json`
+4. `git config user.name`
+5. the current OS username
 
 ## Development
 
-Run the test suite:
+Run the tests with:
 
 ```bash
 go test ./...
 ```
-
-The existing tests cover repo initialization, CLI flows, actor resolution, ready-work filtering,
-parent readiness transitions, concurrent read access, summary JSON output, dependency cycle
-rejection, export, comments, labels, and event generation.
