@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -136,6 +137,129 @@ func TestReadyFilteringAndCloseUnblocks(t *testing.T) {
 
 	if len(ready) != 1 || ready[0].ID != blocked.ID {
 		t.Fatalf("unexpected ready set after close: %#v", ready)
+	}
+}
+
+func TestIssueSummariesIncludeCompactDependencyAndChildData(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	parent, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "parent",
+		Description: "parent body",
+		Type:        issues.TypeTask,
+		Priority:    "high",
+		Labels:      []string{"Backend", "api"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	childOpen, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "child open",
+		Description: "child body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+		ParentID:    parent.ID,
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	childClosed, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "child closed",
+		Description: "child body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+		ParentID:    parent.ID,
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blockerOpen, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "blocker open",
+		Description: "blocker body",
+		Type:        issues.TypeBug,
+		Priority:    "urgent",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blockerClosed, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "blocker closed",
+		Description: "blocker body",
+		Type:        issues.TypeTask,
+		Priority:    "low",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blocked, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "blocked",
+		Description: "blocked body",
+		Type:        issues.TypeFeature,
+		Priority:    "medium",
+		DependsOn:   []string{blockerOpen.ID, blockerClosed.ID},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.CloseIssue(ctx, childClosed.ID, "done", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.CloseIssue(ctx, blockerClosed.ID, "done", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	summaries, err := s.ListIssueSummaries(ctx, store.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byID := make(map[string]issues.IssueSummary, len(summaries))
+	for _, summary := range summaries {
+		byID[summary.ID] = summary
+	}
+
+	parentSummary := byID[parent.ID]
+	if got := strings.Join(parentSummary.Labels, ","); got != "api,backend" {
+		t.Fatalf("unexpected labels: %#v", parentSummary)
+	}
+
+	if got := strings.Join(parentSummary.OpenChildren, ","); got != childOpen.ID {
+		t.Fatalf("unexpected open children: %#v", parentSummary)
+	}
+
+	if len(parentSummary.BlockedBy) != 0 {
+		t.Fatalf("expected no blockers for parent summary: %#v", parentSummary)
+	}
+
+	blockedSummary := byID[blocked.ID]
+	if got := strings.Join(blockedSummary.BlockedBy, ","); got != blockerOpen.ID {
+		t.Fatalf("unexpected blocked_by: %#v", blockedSummary)
+	}
+
+	if blockedSummary.Title != "blocked" || blockedSummary.Type != issues.TypeFeature {
+		t.Fatalf("unexpected base summary fields: %#v", blockedSummary)
+	}
+
+	readySummaries, err := s.ReadyIssueSummaries(ctx, store.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, summary := range readySummaries {
+		if summary.ID == blocked.ID {
+			t.Fatalf("blocked issue should not be ready: %#v", readySummaries)
+		}
 	}
 }
 
