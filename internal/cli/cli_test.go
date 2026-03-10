@@ -484,69 +484,6 @@ func canonicalPath(t *testing.T, path string) string {
 	return abs
 }
 
-func summaryByID(t *testing.T, data []map[string]any, id string) map[string]any {
-	t.Helper()
-
-	for _, item := range data {
-		if item["id"] == id {
-			return item
-		}
-	}
-
-	t.Fatalf("missing summary for %s in %#v", id, data)
-
-	return nil
-}
-
-func assertSummaryKeys(t *testing.T, data map[string]any) {
-	t.Helper()
-
-	wantKeys := []string{
-		"assignee",
-		"blocked_by",
-		"id",
-		"labels",
-		"open_children",
-		"parent_id",
-		"priority",
-		"status",
-		"title",
-		"type",
-	}
-
-	gotKeys := make([]string, 0, len(data))
-	for key := range data {
-		gotKeys = append(gotKeys, key)
-	}
-
-	sort.Strings(gotKeys)
-
-	if strings.Join(gotKeys, ",") != strings.Join(wantKeys, ",") {
-		t.Fatalf("unexpected summary json keys: got %v want %v", gotKeys, wantKeys)
-	}
-}
-
-func stringSlice(t *testing.T, value any) []string {
-	t.Helper()
-
-	items, ok := value.([]any)
-	if !ok {
-		t.Fatalf("expected slice, got %T", value)
-	}
-
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		text, ok := item.(string)
-		if !ok {
-			t.Fatalf("expected string slice item, got %T", item)
-		}
-
-		out = append(out, text)
-	}
-
-	return out
-}
-
 func assertInstallJSON(t *testing.T, data map[string]any, mode, skillsRoot, skillDir, skillPath string) {
 	t.Helper()
 

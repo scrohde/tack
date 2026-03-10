@@ -12,6 +12,7 @@ The current implementation supports:
 - issue creation, listing, show, update, edit, close, and reopen
 - ready-work filtering with `tack ready`
 - comments, labels, and dependency management
+- concurrent read-heavy automation across separate tack processes
 - JSON export with `tack export --json`
 
 Issue IDs use the form `tk-1`, `tk-2`, and so on.

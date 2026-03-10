@@ -16,7 +16,10 @@ import (
 	"tack/internal/issues"
 )
 
-const schemaVersion = "1"
+const (
+	schemaVersion     = "1"
+	sqliteBusyTimeout = 5000
+)
 
 type Store struct {
 	db   *sql.DB
@@ -89,7 +92,9 @@ func (s *Store) Close() error {
 
 func (s *Store) migrate(ctx context.Context) error {
 	stmts := []string{
+		fmt.Sprintf(`PRAGMA busy_timeout = %d;`, sqliteBusyTimeout),
 		`PRAGMA foreign_keys = ON;`,
+		`PRAGMA journal_mode = WAL;`,
 		`CREATE TABLE IF NOT EXISTS issues (
 			id TEXT PRIMARY KEY,
 			sequence INTEGER NOT NULL UNIQUE,
