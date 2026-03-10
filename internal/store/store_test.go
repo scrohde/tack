@@ -217,6 +217,66 @@ func TestReadyExcludesParentsWithOpenChildren(t *testing.T) {
 	}
 }
 
+func TestReadySummariesExcludeParentsWithOpenChildren(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	parent, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "parent",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	child, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "child",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+		ParentID:    parent.ID,
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	standalone, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "standalone",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ready, err := s.ReadyIssueSummaries(ctx, store.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(ready) != 2 || ready[0].ID != child.ID || ready[1].ID != standalone.ID {
+		t.Fatalf("unexpected summary ready set with open child: %#v", ready)
+	}
+
+	_, err = s.CloseIssue(ctx, child.ID, "done", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ready, err = s.ReadyIssueSummaries(ctx, store.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(ready) != 2 || ready[0].ID != parent.ID || ready[1].ID != standalone.ID {
+		t.Fatalf("unexpected summary ready set after child closed: %#v", ready)
+	}
+}
+
 func TestDependencyCycleRejected(t *testing.T) {
 	ctx := testutil.Context(t)
 	repo := testutil.TempRepo(t)

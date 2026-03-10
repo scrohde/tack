@@ -12,7 +12,7 @@ The current implementation supports:
 - issue creation, listing, show, update, edit, close, and reopen
 - ready-work filtering with `tack ready`
 - comments, labels, and dependency management
-- concurrent read-heavy automation across separate tack processes
+- concurrent read-heavy automation across separate tack processes for commands like `tack ready` and `tack export --json`
 - JSON export with `tack export --json`
 
 Issue IDs use the form `tk-1`, `tk-2`, and so on.
@@ -131,6 +131,22 @@ Useful list filters:
 ```bash
 tack list --status open --type bug --label backend --limit 20
 tack ready --assignee alice --json
+tack list --json --summary
+tack ready --json --summary
+```
+
+`tack ready` only returns unassigned open issues whose blockers are closed, whose defer time has
+passed, and which do not have open children. Parent issues stay visible in `tack list`, `tack show`,
+and `tack export --json`; they simply leave the ready queue until all children close.
+
+Both `tack list` and `tack ready` support `--json --summary` for a compact issue payload with
+labels, blockers, and open-child IDs. `--summary` always requires `--json`.
+
+Subcommand help is available both ways:
+
+```bash
+tack ready --help
+tack help ready
 ```
 
 ## Development
@@ -142,4 +158,5 @@ go test ./...
 ```
 
 The existing tests cover repo initialization, CLI flows, actor resolution, ready-work filtering,
-dependency cycle rejection, export, comments, labels, and event generation.
+parent readiness transitions, concurrent read access, summary JSON output, dependency cycle
+rejection, export, comments, labels, and event generation.

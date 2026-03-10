@@ -468,8 +468,19 @@ func (s *Store) ReadyIssueSummaries(ctx context.Context, filter ListFilter) ([]i
 			  AND l.target_id = i.id
 			  AND blocker.status != ?
 		  )
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM issues child
+			WHERE child.parent_id = i.id
+			  AND child.status != ?
+		  )
 	`
-	args := []any{issues.StatusOpen, time.Now().UTC().Format(time.RFC3339Nano), issues.StatusClosed}
+	args := []any{
+		issues.StatusOpen,
+		time.Now().UTC().Format(time.RFC3339Nano),
+		issues.StatusClosed,
+		issues.StatusClosed,
+	}
 
 	if filter.Assignee != "" {
 		query += " AND COALESCE(i.assignee, '') = ?"

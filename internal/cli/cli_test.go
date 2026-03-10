@@ -172,6 +172,18 @@ func TestHelpCommandMatchesFlagHelp(t *testing.T) {
 			want:    "tack commands:",
 		},
 		{
+			name:    "list",
+			direct:  []string{"list", "--help"},
+			viaHelp: []string{"help", "list"},
+			want:    "usage: tack list [flags]",
+		},
+		{
+			name:    "ready",
+			direct:  []string{"ready", "--help"},
+			viaHelp: []string{"help", "ready"},
+			want:    "usage: tack ready [flags]",
+		},
+		{
 			name:    "update",
 			direct:  []string{"update", "--help"},
 			viaHelp: []string{"help", "update"},
@@ -370,6 +382,113 @@ func TestReadyExcludesParentsWithOpenChildrenJSON(t *testing.T) {
 	}
 }
 
+func TestListAndReadySummaryJSON(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+	t.Setenv("TACK_ACTOR", "alice")
+
+	runCLI(t, repo, "init")
+
+	parent := createIssue(t, repo, []string{
+		"create",
+		"--title", "parent",
+		"--type", "task",
+		"--priority", "medium",
+		"--description", "body",
+		"--label", "backend",
+		"--json",
+	})
+	child := createIssue(t, repo, []string{
+		"create",
+		"--title", "child",
+		"--type", "task",
+		"--priority", "medium",
+		"--description", "body",
+		"--parent", stringField(t, parent, "id"),
+		"--json",
+	})
+	blocker := createIssue(t, repo, []string{
+		"create",
+		"--title", "blocker",
+		"--type", "task",
+		"--priority", "medium",
+		"--description", "body",
+		"--json",
+	})
+	blocked := createIssue(t, repo, []string{
+		"create",
+		"--title", "blocked",
+		"--type", "task",
+		"--priority", "medium",
+		"--description", "body",
+		"--depends-on", stringField(t, blocker, "id"),
+		"--label", "backend",
+		"--json",
+	})
+
+	listed := runJSON[[]map[string]any](t, repo, "list", "--json", "--summary")
+	if len(listed) != 4 {
+		t.Fatalf("unexpected summary list length: %#v", listed)
+	}
+
+	parentSummary := listed[0]
+	if gotKeys := sortedKeys(parentSummary); strings.Join(gotKeys, ",") != "assignee,blocked_by,id,labels,open_children,parent_id,priority,status,title,type" {
+		t.Fatalf("unexpected summary keys: %v", gotKeys)
+	}
+
+	if parentSummary["id"] != parent["id"] {
+		t.Fatalf("unexpected parent summary ordering: %#v", listed)
+	}
+
+	if labels := anyStrings(t, parentSummary["labels"]); len(labels) != 1 || labels[0] != "backend" {
+		t.Fatalf("unexpected parent summary labels: %#v", parentSummary)
+	}
+
+	if children := anyStrings(t, parentSummary["open_children"]); len(children) != 1 || children[0] != child["id"] {
+		t.Fatalf("unexpected parent summary open children: %#v", parentSummary)
+	}
+
+	if blockedBy := anyStrings(t, parentSummary["blocked_by"]); len(blockedBy) != 0 {
+		t.Fatalf("expected no blockers for parent summary: %#v", parentSummary)
+	}
+
+	blockedSummary := listed[3]
+	if blockedSummary["id"] != blocked["id"] {
+		t.Fatalf("unexpected blocked summary ordering: %#v", listed)
+	}
+
+	if blockedBy := anyStrings(t, blockedSummary["blocked_by"]); len(blockedBy) != 1 || blockedBy[0] != blocker["id"] {
+		t.Fatalf("unexpected blocked summary blockers: %#v", blockedSummary)
+	}
+
+	ready := runJSON[[]map[string]any](t, repo, "ready", "--json", "--summary")
+	if len(ready) != 2 || ready[0]["id"] != child["id"] || ready[1]["id"] != blocker["id"] {
+		t.Fatalf("unexpected ready summary with open child: %#v", ready)
+	}
+
+	runJSON[map[string]any](t, repo, "close", stringField(t, child, "id"), "--reason", "done", "--json")
+
+	ready = runJSON[[]map[string]any](t, repo, "ready", "--json", "--summary")
+	if len(ready) != 2 || ready[0]["id"] != parent["id"] || ready[1]["id"] != blocker["id"] {
+		t.Fatalf("unexpected ready summary after child close: %#v", ready)
+	}
+}
+
+func TestSummaryRequiresJSON(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+
+	for _, args := range [][]string{
+		{"list", "--summary"},
+		{"ready", "--summary"},
+	} {
+		err := runCLIError(t, repo, args...)
+		if err == nil || !strings.Contains(err.Error(), "--summary requires --json") {
+			t.Fatalf("expected summary/json validation for %v, got %v", args, err)
+		}
+	}
+}
+
 func createIssue(t *testing.T, repo string, args []string) map[string]any {
 	t.Helper()
 
@@ -482,6 +601,38 @@ func canonicalPath(t *testing.T, path string) string {
 	}
 
 	return abs
+}
+
+func sortedKeys(data map[string]any) []string {
+	keys := make([]string, 0, len(data))
+	for key := range data {
+		keys = append(keys, key)
+	}
+
+	sort.Strings(keys)
+
+	return keys
+}
+
+func anyStrings(t *testing.T, value any) []string {
+	t.Helper()
+
+	items, ok := value.([]any)
+	if !ok {
+		t.Fatalf("expected []any, got %T", value)
+	}
+
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		text, ok := item.(string)
+		if !ok {
+			t.Fatalf("expected string element, got %T", item)
+		}
+
+		out = append(out, text)
+	}
+
+	return out
 }
 
 func assertInstallJSON(t *testing.T, data map[string]any, mode, skillsRoot, skillDir, skillPath string) {
