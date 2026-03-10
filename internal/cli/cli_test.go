@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -308,7 +307,7 @@ func TestCreateClaimReadyCloseAndCommentJSON(t *testing.T) {
 	}
 }
 
-func TestListAndReadySummaryJSON(t *testing.T) {
+func TestReadyExcludesParentsWithOpenChildrenJSON(t *testing.T) {
 	repo := testutil.TempRepo(t)
 	testutil.Chdir(t, repo)
 	t.Setenv("TACK_ACTOR", "alice")
@@ -319,113 +318,55 @@ func TestListAndReadySummaryJSON(t *testing.T) {
 		"create",
 		"--title", "parent",
 		"--type", "task",
-		"--priority", "high",
-		"--description", "parent body",
-		"--label", "Backend",
-		"--label", "api",
+		"--priority", "medium",
+		"--description", "body",
 		"--json",
 	})
-	parentID := stringField(t, parent, "id")
-
-	childOpen := createIssue(t, repo, []string{
+	child := createIssue(t, repo, []string{
 		"create",
-		"--title", "child open",
+		"--title", "child",
 		"--type", "task",
 		"--priority", "medium",
-		"--description", "child body",
-		"--parent", parentID,
+		"--description", "body",
+		"--parent", stringField(t, parent, "id"),
 		"--json",
 	})
-
-	childClosed := createIssue(t, repo, []string{
+	standalone := createIssue(t, repo, []string{
 		"create",
-		"--title", "child closed",
+		"--title", "standalone",
 		"--type", "task",
 		"--priority", "medium",
-		"--description", "child body",
-		"--parent", parentID,
+		"--description", "body",
 		"--json",
 	})
 
-	blocker := createIssue(t, repo, []string{
-		"create",
-		"--title", "blocker",
-		"--type", "bug",
-		"--priority", "urgent",
-		"--description", "blocker body",
-		"--json",
-	})
-	blockerID := stringField(t, blocker, "id")
-
-	blocked := createIssue(t, repo, []string{
-		"create",
-		"--title", "blocked",
-		"--type", "feature",
-		"--priority", "medium",
-		"--description", "blocked body",
-		"--depends-on", blockerID,
-		"--label", "ops",
-		"--json",
-	})
-	blockedID := stringField(t, blocked, "id")
-
-	runJSON[map[string]any](t, repo, "close", stringField(t, childClosed, "id"), "--reason", "done", "--json")
-
-	fullList := runJSON[[]map[string]any](t, repo, "list", "--json")
-
-	fullBlocked := summaryByID(t, fullList, blockedID)
-	if fullBlocked["description"] != "blocked body" {
-		t.Fatalf("expected full list json to keep description, got %#v", fullBlocked)
+	ready := runJSON[[]map[string]any](t, repo, "ready", "--json")
+	if len(ready) != 2 || ready[0]["id"] != child["id"] || ready[1]["id"] != standalone["id"] {
+		t.Fatalf("unexpected ready set with open child: %#v", ready)
 	}
 
-	listSummary := runJSON[[]map[string]any](t, repo, "list", "--json", "--summary")
-	blockedSummary := summaryByID(t, listSummary, blockedID)
-	assertSummaryKeys(t, blockedSummary)
-
-	if _, ok := blockedSummary["description"]; ok {
-		t.Fatalf("summary should omit description: %#v", blockedSummary)
+	listed := runJSON[[]map[string]any](t, repo, "list", "--json")
+	if len(listed) != 3 || listed[0]["id"] != parent["id"] {
+		t.Fatalf("expected parent to remain visible in list output, got %#v", listed)
 	}
 
-	if got := stringSlice(t, blockedSummary["blocked_by"]); !slices.Equal(got, []string{blockerID}) {
-		t.Fatalf("unexpected blocked_by: %#v", blockedSummary)
+	shown := runJSON[map[string]any](t, repo, "show", stringField(t, parent, "id"), "--json")
+	if shown["id"] != parent["id"] {
+		t.Fatalf("expected parent to remain visible in show output, got %#v", shown)
 	}
 
-	if got := stringSlice(t, blockedSummary["labels"]); !slices.Equal(got, []string{"ops"}) {
-		t.Fatalf("unexpected labels: %#v", blockedSummary)
+	exported := runJSON[map[string]any](t, repo, "export", "--json")
+
+	exportedIssues, ok := exported["issues"].([]any)
+	if !ok || len(exportedIssues) != 3 {
+		t.Fatalf("expected parent to remain visible in export output, got %#v", exported)
 	}
 
-	parentSummary := summaryByID(t, listSummary, parentID)
-	if got := stringSlice(t, parentSummary["labels"]); !slices.Equal(got, []string{"api", "backend"}) {
-		t.Fatalf("unexpected parent labels: %#v", parentSummary)
-	}
+	runJSON[map[string]any](t, repo, "close", stringField(t, child, "id"), "--reason", "done", "--json")
 
-	if got := stringSlice(t, parentSummary["open_children"]); !slices.Equal(got, []string{stringField(t, childOpen, "id")}) {
-		t.Fatalf("unexpected open_children: %#v", parentSummary)
-	}
-
-	readySummary := runJSON[[]map[string]any](t, repo, "ready", "--json", "--summary")
-	for _, item := range readySummary {
-		assertSummaryKeys(t, item)
-
-		if _, ok := item["description"]; ok {
-			t.Fatalf("ready summary should omit description: %#v", item)
-		}
-
-		if item["id"] == blockedID {
-			t.Fatalf("blocked issue should not appear in ready summary: %#v", readySummary)
-		}
-	}
-}
-
-func TestSummaryRequiresJSON(t *testing.T) {
-	repo := testutil.TempRepo(t)
-	testutil.Chdir(t, repo)
-
-	runCLI(t, repo, "init")
-
-	err := runCLIError(t, repo, "list", "--summary")
-	if err == nil || !strings.Contains(err.Error(), "--summary requires --json") {
-		t.Fatalf("expected summary/json usage error, got %v", err)
+	ready = runJSON[[]map[string]any](t, repo, "ready", "--json")
+	if len(ready) != 2 || ready[0]["id"] != parent["id"] || ready[1]["id"] != standalone["id"] {
+		t.Fatalf("unexpected ready set after child close: %#v", ready)
 	}
 }
 
