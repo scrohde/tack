@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -362,5 +363,153 @@ func TestCommentsLabelsAndEvents(t *testing.T) {
 
 	if len(exported.Events) != 3 {
 		t.Fatalf("expected create/comment/labels events, got %d", len(exported.Events))
+	}
+}
+
+func TestImportIssuesCreatesGraph(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	result, err := s.ImportIssues(ctx, store.ImportManifest{
+		Issues: []store.ImportIssueInput{
+			{
+				ID:          "epic",
+				Title:       "Imported epic",
+				Type:        issues.TypeEpic,
+				Priority:    "high",
+				Description: "parent issue",
+				Labels:      []string{"Planning"},
+			},
+			{
+				ID:          "task",
+				Title:       "Imported task",
+				Description: "child issue",
+				Parent:      "epic",
+				DependsOn:   []string{"bug"},
+				Labels:      []string{"Backend", "backend"},
+			},
+			{
+				ID:          "bug",
+				Title:       "Imported bug",
+				Type:        issues.TypeBug,
+				Priority:    "urgent",
+				Description: "blocking issue",
+			},
+		},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.CreatedIDs) != 3 {
+		t.Fatalf("expected 3 created issues, got %#v", result)
+	}
+
+	if got := result.AliasMap["epic"]; got != "tk-1" {
+		t.Fatalf("unexpected epic id: %#v", result.AliasMap)
+	}
+
+	task, err := s.GetIssue(ctx, result.AliasMap["task"])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if task.ParentID != result.AliasMap["epic"] {
+		t.Fatalf("unexpected imported parent id: %#v", task)
+	}
+
+	if task.Type != issues.TypeTask || task.Priority != "medium" {
+		t.Fatalf("expected default type/priority for imported task, got %#v", task)
+	}
+
+	if len(task.Labels) != 1 || task.Labels[0] != "backend" {
+		t.Fatalf("unexpected imported task labels: %#v", task.Labels)
+	}
+
+	deps, err := s.ListDependencies(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(deps.BlockedBy) != 1 || deps.BlockedBy[0].SourceID != result.AliasMap["bug"] {
+		t.Fatalf("unexpected imported dependencies: %#v", deps)
+	}
+
+	exported, err := s.Export(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(exported.Events) != 3 {
+		t.Fatalf("expected 3 create events after import, got %d", len(exported.Events))
+	}
+}
+
+func TestImportIssuesRejectsDuplicateAlias(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	_, err := s.ImportIssues(ctx, store.ImportManifest{
+		Issues: []store.ImportIssueInput{
+			{ID: "dup", Title: "first"},
+			{ID: "dup", Title: "second"},
+		},
+	}, "alice")
+	if err == nil || err.Error() != `duplicate manifest issue id "dup"` {
+		t.Fatalf("expected duplicate alias error, got %v", err)
+	}
+}
+
+func TestImportIssuesRejectsMissingReference(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	_, err := s.ImportIssues(ctx, store.ImportManifest{
+		Issues: []store.ImportIssueInput{
+			{
+				ID:        "task",
+				Title:     "task",
+				DependsOn: []string{"missing"},
+			},
+		},
+	}, "alice")
+	if err == nil || err.Error() != `issue "task" depends on unknown alias "missing"` {
+		t.Fatalf("expected missing reference error, got %v", err)
+	}
+}
+
+func TestImportIssuesRollsBackOnInvalidGraph(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	_, err := s.ImportIssues(ctx, store.ImportManifest{
+		Issues: []store.ImportIssueInput{
+			{
+				ID:        "a",
+				Title:     "A",
+				DependsOn: []string{"b"},
+			},
+			{
+				ID:        "b",
+				Title:     "B",
+				DependsOn: []string{"a"},
+			},
+		},
+	}, "alice")
+	if err == nil || !strings.Contains(err.Error(), "dependency cycle detected") {
+		t.Fatalf("expected cycle error, got %v", err)
+	}
+
+	listed, err := s.ListIssues(ctx, store.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(listed) != 0 {
+		t.Fatalf("expected import rollback, got %#v", listed)
 	}
 }

@@ -178,6 +178,12 @@ func TestHelpCommandMatchesFlagHelp(t *testing.T) {
 			want:    "usage: tack list [flags]",
 		},
 		{
+			name:    "import",
+			direct:  []string{"import", "--help"},
+			viaHelp: []string{"help", "import"},
+			want:    "usage: tack import --file <path> [--json]",
+		},
+		{
 			name:    "ready",
 			direct:  []string{"ready", "--help"},
 			viaHelp: []string{"help", "ready"},
@@ -489,6 +495,99 @@ func TestSummaryRequiresJSON(t *testing.T) {
 	}
 }
 
+func TestImportJSON(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+	t.Setenv("TACK_ACTOR", "alice")
+
+	runCLI(t, repo, "init")
+
+	manifestPath := writeManifest(t, repo, `{
+  "issues": [
+    {
+      "id": "epic",
+      "title": "Imported epic",
+      "type": "epic",
+      "priority": "high",
+      "description": "parent"
+    },
+    {
+      "id": "task",
+      "title": "Imported task",
+      "parent": "epic",
+      "depends_on": ["bug"],
+      "labels": ["backend"]
+    },
+    {
+      "id": "bug",
+      "title": "Imported bug",
+      "type": "bug",
+      "priority": "urgent"
+    }
+  ]
+}`)
+
+	result := runJSON[map[string]any](t, repo, "import", "--file", manifestPath, "--json")
+	if gotKeys := sortedKeys(result); strings.Join(gotKeys, ",") != "alias_map,created_ids" {
+		t.Fatalf("unexpected import json keys: %v", gotKeys)
+	}
+
+	createdIDs := anyStrings(t, result["created_ids"])
+	if len(createdIDs) != 3 || createdIDs[0] != "tk-1" || createdIDs[2] != "tk-3" {
+		t.Fatalf("unexpected created ids: %#v", result)
+	}
+
+	aliasMap, ok := result["alias_map"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected alias_map object, got %#v", result["alias_map"])
+	}
+
+	if aliasMap["task"] != "tk-2" {
+		t.Fatalf("unexpected alias map: %#v", aliasMap)
+	}
+
+	task := runJSON[map[string]any](t, repo, "show", "tk-2", "--json")
+	if task["parent_id"] != "tk-1" || task["type"] != "task" || task["priority"] != "medium" {
+		t.Fatalf("unexpected imported task payload: %#v", task)
+	}
+
+	deps := runJSON[map[string]any](t, repo, "dep", "list", "tk-2", "--json")
+
+	blockedBy, ok := deps["blocked_by"].([]any)
+	if !ok || len(blockedBy) != 1 {
+		t.Fatalf("unexpected dependency payload: %#v", deps)
+	}
+
+	blocker, ok := blockedBy[0].(map[string]any)
+	if !ok || blocker["source_id"] != "tk-3" {
+		t.Fatalf("unexpected blocker payload: %#v", deps)
+	}
+}
+
+func TestImportPlaintextOutput(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+	t.Setenv("TACK_ACTOR", "alice")
+
+	runCLI(t, repo, "init")
+
+	manifestPath := writeManifest(t, repo, `{
+  "issues": [
+    {"id": "first", "title": "First"},
+    {"id": "second", "title": "Second"}
+  ]
+}`)
+
+	out, err := runCLIBytes(repo, "import", "--file", manifestPath)
+	if err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
+
+	if string(out) != "imported 2 issues\nfirst\ttk-1\nsecond\ttk-2\n" {
+		t.Fatalf("unexpected import output: %q", string(out))
+	}
+}
+
 func createIssue(t *testing.T, repo string, args []string) map[string]any {
 	t.Helper()
 
@@ -633,6 +732,19 @@ func anyStrings(t *testing.T, value any) []string {
 	}
 
 	return out
+}
+
+func writeManifest(t *testing.T, repo, body string) string {
+	t.Helper()
+
+	path := filepath.Join(repo, "manifest.json")
+
+	err := os.WriteFile(path, []byte(body), 0o644)
+	if err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	return path
 }
 
 func assertInstallJSON(t *testing.T, data map[string]any, mode, skillsRoot, skillDir, skillPath string) {

@@ -26,6 +26,7 @@ type App struct {
 
 const (
 	usageSkillInstall = "usage: tack skill install [--home|--path <dir>] [--json]"
+	usageImport       = "usage: tack import --file <path> [--json]"
 	usageShow         = "usage: tack show <id>"
 	usageUpdate       = "usage: tack update <id> [flags]"
 	usageEdit         = "usage: tack edit <id>"
@@ -72,6 +73,8 @@ func (a *App) execute(ctx context.Context, args []string) error {
 		return a.runInit(args[1:])
 	case "create":
 		return a.runCreate(ctx, args[1:])
+	case "import":
+		return a.runImport(ctx, args[1:])
 	case "show":
 		return a.runShow(ctx, args[1:])
 	case "list":
@@ -319,6 +322,53 @@ func (a *App) runSkillInstall(args []string) error {
 	_, err = fmt.Fprintf(a.stdout, "installed %s skill to %s\n", skill.TackSkillName, result.InstalledPath)
 
 	return err
+}
+
+func (a *App) runImport(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("import", flag.ContinueOnError)
+	filePath := fs.String("file", "", "path to JSON manifest")
+	jsonOut := fs.Bool("json", false, "output JSON")
+	actorFlag := fs.String("actor", "", "actor override")
+
+	err := a.parseFlags(fs, args, usageImport)
+	if err != nil {
+		return err
+	}
+
+	if fs.NArg() != 0 {
+		return errors.New(usageImport)
+	}
+
+	if strings.TrimSpace(*filePath) == "" {
+		return errors.New("--file is required")
+	}
+
+	manifest, err := readImportManifest(*filePath)
+	if err != nil {
+		return err
+	}
+
+	repoRoot, s, err := openRepoStore()
+	if err != nil {
+		return err
+	}
+	defer closeStore(s)
+
+	actor, err := issues.ResolveActor(repoRoot, *actorFlag)
+	if err != nil {
+		return err
+	}
+
+	result, err := s.ImportIssues(ctx, manifest, actor)
+	if err != nil {
+		return err
+	}
+
+	if *jsonOut {
+		return writeJSON(a.stdout, result)
+	}
+
+	return printImportSummary(a.stdout, manifest, result)
 }
 
 func (a *App) runShow(ctx context.Context, args []string) error {
@@ -1314,10 +1364,32 @@ func printIssueTable(w io.Writer, all []issues.Issue) error {
 	return tw.Flush()
 }
 
+func printImportSummary(w io.Writer, manifest store.ImportManifest, result store.ImportResult) error {
+	_, err := fmt.Fprintf(w, "imported %d issues\n", len(result.CreatedIDs))
+	if err != nil {
+		return err
+	}
+
+	for _, issue := range manifest.Issues {
+		alias := strings.TrimSpace(issue.ID)
+		if alias == "" {
+			continue
+		}
+
+		_, err = fmt.Fprintf(w, "%s\t%s\n", alias, result.AliasMap[alias])
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (a *App) printUsage() error {
 	_, err := fmt.Fprintln(a.stdout, `tack commands:
   tack init
   tack create
+  tack import --file <path> [--json]
   tack show <id>
   tack list
   tack ready
@@ -1346,6 +1418,8 @@ func (a *App) runHelp(ctx context.Context, args []string) error {
 		return a.runInit(withHelp)
 	case "create":
 		return a.runCreate(ctx, withHelp)
+	case "import":
+		return a.runImport(ctx, withHelp)
 	case "show":
 		return a.runShow(ctx, withHelp)
 	case "list":
@@ -1441,6 +1515,41 @@ func printUsageWithDefaults(w io.Writer, usage string, defaults func(io.Writer) 
 	}
 
 	return defaults(w)
+}
+
+func readImportManifest(path string) (_ store.ImportManifest, err error) {
+	var manifest store.ImportManifest
+
+	file, err := os.Open(path)
+	if err != nil {
+		return manifest, err
+	}
+
+	defer func() {
+		closeErr := file.Close()
+		if err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+
+	dec := json.NewDecoder(file)
+	dec.DisallowUnknownFields()
+
+	err = dec.Decode(&manifest)
+	if err != nil {
+		return store.ImportManifest{}, err
+	}
+
+	err = dec.Decode(&struct{}{})
+	if !errors.Is(err, io.EOF) {
+		if err == nil {
+			return store.ImportManifest{}, errors.New("manifest must contain a single JSON value")
+		}
+
+		return store.ImportManifest{}, err
+	}
+
+	return manifest, nil
 }
 
 func isHelpToken(arg string) bool {

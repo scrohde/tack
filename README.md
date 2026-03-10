@@ -10,6 +10,7 @@ The current implementation supports:
 
 - repo initialization with `tack init`
 - issue creation, listing, show, update, edit, close, and reopen
+- manifest-driven bulk issue import with `tack import --file manifest.json`
 - ready-work filtering with `tack ready`
 - comments, labels, and dependency management
 - concurrent read-heavy automation across separate tack processes for commands like `tack ready` and `tack export --json`
@@ -112,6 +113,7 @@ For best results, have the agent implement a small set of issues per session.  T
 tack help
 tack init
 tack create
+tack import --file <path> [--json]
 tack show <id>
 tack list
 tack ready
@@ -148,6 +150,44 @@ Subcommand help is available both ways:
 tack ready --help
 tack help ready
 ```
+
+Manifest import is JSON-only in v1:
+
+```json
+{
+  "issues": [
+    {
+      "id": "epic",
+      "title": "Agent workflow follow-up",
+      "type": "epic",
+      "priority": "high"
+    },
+    {
+      "id": "task",
+      "title": "Implement the importer",
+      "parent": "epic",
+      "depends_on": ["tests"],
+      "labels": ["automation"]
+    },
+    {
+      "id": "tests",
+      "title": "Add regression coverage",
+      "type": "task"
+    }
+  ]
+}
+```
+
+Run it with:
+
+```bash
+tack import --file manifest.json
+tack import --file manifest.json --json
+```
+
+The manifest `id`, `parent`, and `depends_on` fields are manifest-local aliases. Import creates
+all issues and links atomically, defaults omitted `type` values to `task`, defaults omitted
+`priority` values to `medium`, and returns `created_ids` plus an `alias_map` in JSON mode.
 
 ## Development
 

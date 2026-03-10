@@ -38,6 +38,26 @@ type CreateIssueInput struct {
 	Labels          []string
 }
 
+type ImportManifest struct {
+	Issues []ImportIssueInput `json:"issues"`
+}
+
+type ImportIssueInput struct {
+	DependsOn   []string `json:"depends_on"`
+	Labels      []string `json:"labels"`
+	Description string   `json:"description"`
+	Title       string   `json:"title"`
+	Type        string   `json:"type"`
+	Priority    string   `json:"priority"`
+	ID          string   `json:"id"`
+	Parent      string   `json:"parent"`
+}
+
+type ImportResult struct {
+	AliasMap   map[string]string `json:"alias_map"`
+	CreatedIDs []string          `json:"created_ids"`
+}
+
 type UpdateIssueInput struct {
 	Title              *string
 	Description        *string
@@ -1124,6 +1144,101 @@ func (s *Store) Export(ctx context.Context) (issues.Export, error) {
 	}, nil
 }
 
+func (s *Store) ImportIssues(ctx context.Context, manifest ImportManifest, actor string) (ImportResult, error) {
+	entries, err := normalizeImportManifest(manifest)
+	if err != nil {
+		return ImportResult{}, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ImportResult{}, err
+	}
+	defer rollbackTx(tx)
+
+	now := time.Now().UTC()
+	createdIDs := make([]string, 0, len(entries))
+	aliasMap := make(map[string]string, len(entries))
+
+	for _, entry := range entries {
+		sequence, err := nextSequence(ctx, tx)
+		if err != nil {
+			return ImportResult{}, err
+		}
+
+		id := fmt.Sprintf("tk-%d", sequence)
+
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO issues (
+				id, sequence, title, description, type, status, priority, assignee,
+				created_at, updated_at, closed_at, parent_id, deferred_until, estimate_minutes
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)
+		`, id, sequence, entry.Title, entry.Description, entry.Type, issues.StatusOpen, entry.Priority, "",
+			now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+		if err != nil {
+			return ImportResult{}, err
+		}
+
+		err = addLabelsTx(ctx, tx, id, entry.Labels, now)
+		if err != nil {
+			return ImportResult{}, err
+		}
+
+		aliasMap[entry.Alias] = id
+		createdIDs = append(createdIDs, id)
+	}
+
+	for _, entry := range entries {
+		id := aliasMap[entry.Alias]
+		parentID := ""
+
+		if entry.ParentAlias != "" {
+			parentID = aliasMap[entry.ParentAlias]
+
+			_, err = tx.ExecContext(ctx, `UPDATE issues SET parent_id = ? WHERE id = ?`, parentID, id)
+			if err != nil {
+				return ImportResult{}, err
+			}
+
+			err = syncParentLink(ctx, tx, id, parentID, now)
+			if err != nil {
+				return ImportResult{}, err
+			}
+		}
+
+		blockerIDs := make([]string, 0, len(entry.DependsOn))
+
+		for _, blockerAlias := range entry.DependsOn {
+			blockerID := aliasMap[blockerAlias]
+			blockerIDs = append(blockerIDs, blockerID)
+
+			err = addDependencyTx(ctx, tx, id, blockerID, now)
+			if err != nil {
+				return ImportResult{}, err
+			}
+		}
+
+		err = appendEventTx(ctx, tx, id, actor, "issue_created", map[string]any{
+			"title":      entry.Title,
+			"type":       entry.Type,
+			"priority":   entry.Priority,
+			"parent_id":  parentID,
+			"depends_on": blockerIDs,
+			"labels":     entry.Labels,
+		})
+		if err != nil {
+			return ImportResult{}, err
+		}
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return ImportResult{}, err
+	}
+
+	return ImportResult{AliasMap: aliasMap, CreatedIDs: createdIDs}, nil
+}
+
 func (s *Store) listLinks(ctx context.Context, query string, args ...any) ([]issues.Link, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -1667,4 +1782,119 @@ func closeRows(rows *sql.Rows) {
 	if err != nil {
 		return
 	}
+}
+
+type normalizedImportIssue struct {
+	DependsOn   []string
+	Labels      []string
+	Alias       string
+	Description string
+	Title       string
+	Type        string
+	Priority    string
+	ParentAlias string
+}
+
+func normalizeImportManifest(manifest ImportManifest) ([]normalizedImportIssue, error) {
+	if len(manifest.Issues) == 0 {
+		return nil, errors.New("manifest must contain at least one issue")
+	}
+
+	out := make([]normalizedImportIssue, 0, len(manifest.Issues))
+	aliases := make(map[string]struct{}, len(manifest.Issues))
+
+	for i, issue := range manifest.Issues {
+		alias := strings.TrimSpace(issue.ID)
+		if alias == "" {
+			return nil, fmt.Errorf("issue %d: id is required", i+1)
+		}
+
+		if _, ok := aliases[alias]; ok {
+			return nil, fmt.Errorf("duplicate manifest issue id %q", alias)
+		}
+
+		title := strings.TrimSpace(issue.Title)
+		if title == "" {
+			return nil, fmt.Errorf("issue %q: title is required", alias)
+		}
+
+		kind := strings.ToLower(strings.TrimSpace(issue.Type))
+		if kind == "" {
+			kind = issues.TypeTask
+		}
+
+		if !issues.IsValidType(kind) {
+			return nil, fmt.Errorf("issue %q: invalid type %q", alias, kind)
+		}
+
+		priority := strings.ToLower(strings.TrimSpace(issue.Priority))
+		if priority == "" {
+			priority = "medium"
+		}
+
+		if !issues.IsValidPriority(priority) {
+			return nil, fmt.Errorf("issue %q: invalid priority %q", alias, priority)
+		}
+
+		parentAlias := strings.TrimSpace(issue.Parent)
+		if parentAlias == alias {
+			return nil, fmt.Errorf("issue %q cannot be its own parent", alias)
+		}
+
+		dependsOn := normalizeImportAliases(issue.DependsOn)
+		for _, blockerAlias := range dependsOn {
+			if blockerAlias == alias {
+				return nil, fmt.Errorf("issue %q cannot depend on itself", alias)
+			}
+		}
+
+		aliases[alias] = struct{}{}
+		out = append(out, normalizedImportIssue{
+			Alias:       alias,
+			Title:       title,
+			Description: strings.TrimSpace(issue.Description),
+			Type:        kind,
+			Priority:    priority,
+			Labels:      issues.NormalizeLabels(issue.Labels),
+			ParentAlias: parentAlias,
+			DependsOn:   dependsOn,
+		})
+	}
+
+	for _, issue := range out {
+		if issue.ParentAlias != "" {
+			if _, ok := aliases[issue.ParentAlias]; !ok {
+				return nil, fmt.Errorf("issue %q references unknown parent %q", issue.Alias, issue.ParentAlias)
+			}
+		}
+
+		for _, blockerAlias := range issue.DependsOn {
+			if _, ok := aliases[blockerAlias]; !ok {
+				return nil, fmt.Errorf("issue %q depends on unknown alias %q", issue.Alias, blockerAlias)
+			}
+		}
+	}
+
+	return out, nil
+}
+
+func normalizeImportAliases(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+
+	return out
 }
