@@ -53,6 +53,19 @@ type Issue struct {
 	Sequence        int64      `json:"sequence"`
 }
 
+type IssueSummary struct {
+	Labels       []string `json:"labels"`
+	BlockedBy    []string `json:"blocked_by"`
+	OpenChildren []string `json:"open_children"`
+	Priority     string   `json:"priority"`
+	Assignee     string   `json:"assignee"`
+	Status       string   `json:"status"`
+	Type         string   `json:"type"`
+	ID           string   `json:"id"`
+	ParentID     string   `json:"parent_id"`
+	Title        string   `json:"title"`
+}
+
 type Link struct {
 	CreatedAt time.Time `json:"created_at"`
 	SourceID  string    `json:"source_id"`

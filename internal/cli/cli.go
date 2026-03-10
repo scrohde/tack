@@ -362,7 +362,7 @@ func (a *App) runShow(ctx context.Context, args []string) error {
 }
 
 func (a *App) runList(ctx context.Context, args []string) error {
-	filter, jsonOut, err := parseListFilter("list", a.stdout, args)
+	filter, jsonOut, summaryOut, err := parseListFilter("list", a.stdout, args)
 	if err != nil {
 		return err
 	}
@@ -372,6 +372,15 @@ func (a *App) runList(ctx context.Context, args []string) error {
 		return err
 	}
 	defer closeStore(s)
+
+	if summaryOut {
+		summaries, err := s.ListIssueSummaries(ctx, filter)
+		if err != nil {
+			return err
+		}
+
+		return writeJSON(a.stdout, summaries)
+	}
 
 	issues, err := s.ListIssues(ctx, filter)
 	if err != nil {
@@ -386,7 +395,7 @@ func (a *App) runList(ctx context.Context, args []string) error {
 }
 
 func (a *App) runReady(ctx context.Context, args []string) error {
-	filter, jsonOut, err := parseListFilter("ready", a.stdout, args)
+	filter, jsonOut, summaryOut, err := parseListFilter("ready", a.stdout, args)
 	if err != nil {
 		return err
 	}
@@ -396,6 +405,15 @@ func (a *App) runReady(ctx context.Context, args []string) error {
 		return err
 	}
 	defer closeStore(s)
+
+	if summaryOut {
+		summaries, err := s.ReadyIssueSummaries(ctx, filter)
+		if err != nil {
+			return err
+		}
+
+		return writeJSON(a.stdout, summaries)
+	}
 
 	issues, err := s.ReadyIssues(ctx, filter)
 	if err != nil {
@@ -1172,7 +1190,7 @@ func (a *App) runExport(ctx context.Context, args []string) error {
 	return writeJSON(a.stdout, data)
 }
 
-func parseListFilter(name string, helpOutput io.Writer, args []string) (store.ListFilter, bool, error) {
+func parseListFilter(name string, helpOutput io.Writer, args []string) (store.ListFilter, bool, bool, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	status := fs.String("status", "", "status filter")
 	assignee := fs.String("assignee", "", "assignee filter")
@@ -1181,14 +1199,19 @@ func parseListFilter(name string, helpOutput io.Writer, args []string) (store.Li
 	limit := fs.Int("limit", 0, "max results")
 
 	jsonOut := fs.Bool("json", false, "output JSON")
+	summaryOut := fs.Bool("summary", false, "output compact JSON summaries")
 
 	err := parseFlagSet(fs, helpOutput, args, fmt.Sprintf("usage: tack %s [flags]", name))
 	if err != nil {
-		return store.ListFilter{}, false, err
+		return store.ListFilter{}, false, false, err
 	}
 
 	if fs.NArg() != 0 {
-		return store.ListFilter{}, false, fmt.Errorf("usage: tack %s [flags]", name)
+		return store.ListFilter{}, false, false, fmt.Errorf("usage: tack %s [flags]", name)
+	}
+
+	if *summaryOut && !*jsonOut {
+		return store.ListFilter{}, false, false, errors.New("--summary requires --json")
 	}
 
 	return store.ListFilter{
@@ -1197,7 +1220,7 @@ func parseListFilter(name string, helpOutput io.Writer, args []string) (store.Li
 		Label:    strings.TrimSpace(*label),
 		Type:     strings.TrimSpace(*kind),
 		Limit:    *limit,
-	}, *jsonOut, nil
+	}, *jsonOut, *summaryOut, nil
 }
 
 func openRepoStore() (string, *store.Store, error) {

@@ -333,6 +333,57 @@ func (s *Store) ListIssues(ctx context.Context, filter ListFilter) ([]issues.Iss
 	return scanIssues(rows, s)
 }
 
+func (s *Store) ListIssueSummaries(ctx context.Context, filter ListFilter) ([]issues.IssueSummary, error) {
+	query := `
+		SELECT i.id, i.title, i.status, i.type, i.priority, COALESCE(i.assignee, ''), COALESCE(i.parent_id, '')
+		FROM issues i
+	`
+
+	var (
+		where []string
+		args  []any
+	)
+
+	if filter.Status != "" {
+		where = append(where, "i.status = ?")
+		args = append(args, filter.Status)
+	}
+
+	if filter.Assignee != "" {
+		where = append(where, "COALESCE(i.assignee, '') = ?")
+		args = append(args, filter.Assignee)
+	}
+
+	if filter.Type != "" {
+		where = append(where, "i.type = ?")
+		args = append(args, filter.Type)
+	}
+
+	if filter.Label != "" {
+		where = append(where, "EXISTS (SELECT 1 FROM issue_labels l WHERE l.issue_id = i.id AND l.label = ?)")
+		args = append(args, strings.ToLower(filter.Label))
+	}
+
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+
+	query += " ORDER BY i.sequence ASC"
+	if filter.Limit > 0 {
+		query += " LIMIT ?"
+
+		args = append(args, filter.Limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer closeRows(rows)
+
+	return scanIssueSummaries(ctx, rows, s)
+}
+
 func (s *Store) ReadyIssues(ctx context.Context, filter ListFilter) ([]issues.Issue, error) {
 	query := `
 		SELECT i.id, i.sequence, i.title, i.description, i.type, i.status, i.priority, COALESCE(i.assignee, ''),
@@ -384,6 +435,58 @@ func (s *Store) ReadyIssues(ctx context.Context, filter ListFilter) ([]issues.Is
 	defer closeRows(rows)
 
 	return scanIssues(rows, s)
+}
+
+func (s *Store) ReadyIssueSummaries(ctx context.Context, filter ListFilter) ([]issues.IssueSummary, error) {
+	query := `
+		SELECT i.id, i.title, i.status, i.type, i.priority, COALESCE(i.assignee, ''), COALESCE(i.parent_id, '')
+		FROM issues i
+		WHERE i.status = ?
+		  AND COALESCE(i.assignee, '') = ''
+		  AND (i.deferred_until IS NULL OR i.deferred_until <= ?)
+		  AND NOT EXISTS (
+			SELECT 1
+			FROM issue_links l
+			JOIN issues blocker ON blocker.id = l.source_id
+			WHERE l.kind = 'blocks'
+			  AND l.target_id = i.id
+			  AND blocker.status != ?
+		  )
+	`
+	args := []any{issues.StatusOpen, time.Now().UTC().Format(time.RFC3339Nano), issues.StatusClosed}
+
+	if filter.Assignee != "" {
+		query += " AND COALESCE(i.assignee, '') = ?"
+
+		args = append(args, filter.Assignee)
+	}
+
+	if filter.Type != "" {
+		query += " AND i.type = ?"
+
+		args = append(args, filter.Type)
+	}
+
+	if filter.Label != "" {
+		query += " AND EXISTS (SELECT 1 FROM issue_labels l WHERE l.issue_id = i.id AND l.label = ?)"
+
+		args = append(args, strings.ToLower(filter.Label))
+	}
+
+	query += " ORDER BY i.sequence ASC"
+	if filter.Limit > 0 {
+		query += " LIMIT ?"
+
+		args = append(args, filter.Limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer closeRows(rows)
+
+	return scanIssueSummaries(ctx, rows, s)
 }
 
 func (s *Store) UpdateIssue(ctx context.Context, id string, input UpdateIssueInput, actor string) (issues.Issue, error) {
@@ -1295,6 +1398,203 @@ func scanIssues(rows *sql.Rows, s *Store) ([]issues.Issue, error) {
 	}
 
 	return out, nil
+}
+
+func scanIssueSummaries(ctx context.Context, rows *sql.Rows, s *Store) ([]issues.IssueSummary, error) {
+	var (
+		ids []string
+		out []issues.IssueSummary
+	)
+
+	for rows.Next() {
+		summary := issues.IssueSummary{
+			Labels:       []string{},
+			BlockedBy:    []string{},
+			OpenChildren: []string{},
+		}
+
+		err := rows.Scan(
+			&summary.ID,
+			&summary.Title,
+			&summary.Status,
+			&summary.Type,
+			&summary.Priority,
+			&summary.Assignee,
+			&summary.ParentID,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		ids = append(ids, summary.ID)
+		out = append(out, summary)
+	}
+
+	err := rows.Err()
+	if err != nil {
+		return nil, err
+	}
+
+	err = rows.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	labelsByIssue, err := s.listSummaryLabels(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+
+	blockedByIssue, err := s.listSummaryBlockedBy(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+
+	openChildrenByIssue, err := s.listSummaryOpenChildren(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range out {
+		if labels, ok := labelsByIssue[out[i].ID]; ok {
+			out[i].Labels = labels
+		}
+
+		if blockedBy, ok := blockedByIssue[out[i].ID]; ok {
+			out[i].BlockedBy = blockedBy
+		}
+
+		if openChildren, ok := openChildrenByIssue[out[i].ID]; ok {
+			out[i].OpenChildren = openChildren
+		}
+	}
+
+	return out, nil
+}
+
+func (s *Store) listSummaryLabels(ctx context.Context, ids []string) (map[string][]string, error) {
+	if len(ids) == 0 {
+		return map[string][]string{}, nil
+	}
+
+	query, args := queryForIDs(`
+		SELECT issue_id, label
+		FROM issue_labels
+		WHERE issue_id IN (%s)
+		ORDER BY issue_id ASC, label ASC
+	`, ids)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer closeRows(rows)
+
+	labelsByIssue := make(map[string][]string, len(ids))
+
+	for rows.Next() {
+		var (
+			issueID string
+			label   string
+		)
+
+		err := rows.Scan(&issueID, &label)
+		if err != nil {
+			return nil, err
+		}
+
+		labelsByIssue[issueID] = append(labelsByIssue[issueID], label)
+	}
+
+	return labelsByIssue, rows.Err()
+}
+
+func (s *Store) listSummaryBlockedBy(ctx context.Context, ids []string) (map[string][]string, error) {
+	if len(ids) == 0 {
+		return map[string][]string{}, nil
+	}
+
+	query, args := queryForIDs(`
+		SELECT l.target_id, blocker.id
+		FROM issue_links l
+		JOIN issues blocker ON blocker.id = l.source_id
+		WHERE l.kind = 'blocks'
+		  AND l.target_id IN (%s)
+		  AND blocker.status != ?
+		ORDER BY l.target_id ASC, blocker.sequence ASC
+	`, ids)
+	args = append(args, issues.StatusClosed)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer closeRows(rows)
+
+	blockedByIssue := make(map[string][]string, len(ids))
+
+	for rows.Next() {
+		var issueID, blockerID string
+
+		err := rows.Scan(&issueID, &blockerID)
+		if err != nil {
+			return nil, err
+		}
+
+		blockedByIssue[issueID] = append(blockedByIssue[issueID], blockerID)
+	}
+
+	return blockedByIssue, rows.Err()
+}
+
+func (s *Store) listSummaryOpenChildren(ctx context.Context, ids []string) (map[string][]string, error) {
+	if len(ids) == 0 {
+		return map[string][]string{}, nil
+	}
+
+	query, args := queryForIDs(`
+		SELECT l.source_id, child.id
+		FROM issue_links l
+		JOIN issues child ON child.id = l.target_id
+		WHERE l.kind = 'parent_child'
+		  AND l.source_id IN (%s)
+		  AND child.status != ?
+		ORDER BY l.source_id ASC, child.sequence ASC
+	`, ids)
+	args = append(args, issues.StatusClosed)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer closeRows(rows)
+
+	openChildrenByIssue := make(map[string][]string, len(ids))
+
+	for rows.Next() {
+		var issueID, childID string
+
+		err := rows.Scan(&issueID, &childID)
+		if err != nil {
+			return nil, err
+		}
+
+		openChildrenByIssue[issueID] = append(openChildrenByIssue[issueID], childID)
+	}
+
+	return openChildrenByIssue, rows.Err()
+}
+
+func queryForIDs(query string, ids []string) (string, []any) {
+	placeholders := make([]string, 0, len(ids))
+	args := make([]any, 0, len(ids))
+
+	for _, id := range ids {
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
+
+	return fmt.Sprintf(query, strings.Join(placeholders, ", ")), args
 }
 
 func nullableString(v string) any {
