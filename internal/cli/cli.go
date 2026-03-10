@@ -24,6 +24,24 @@ type App struct {
 	stderr io.Writer
 }
 
+const (
+	usageSkillInstall = "usage: tack skill install [--home|--path <dir>] [--json]"
+	usageShow         = "usage: tack show <id>"
+	usageUpdate       = "usage: tack update <id> [flags]"
+	usageEdit         = "usage: tack edit <id>"
+	usageComment      = "usage: tack comment add|list"
+	usageCommentAdd   = "usage: tack comment add <id> [--body|--body-file]"
+	usageCommentList  = "usage: tack comment list <id>"
+	usageDep          = "usage: tack dep add|remove|list"
+	usageDepAdd       = "usage: tack dep add <blocked-id> <blocker-id>"
+	usageDepRemove    = "usage: tack dep remove <blocked-id> <blocker-id>"
+	usageDepList      = "usage: tack dep list <id>"
+	usageLabels       = "usage: tack labels add|remove|list"
+	usageLabelsAdd    = "usage: tack labels add <id> <label> [label...]"
+	usageLabelsRemove = "usage: tack labels remove <id> <label> [label...]"
+	usageLabelsList   = "usage: tack labels list <id>"
+)
+
 func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	app := &App{stdout: stdout, stderr: stderr}
 
@@ -31,6 +49,15 @@ func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) error
 }
 
 func (a *App) Execute(ctx context.Context, args []string) error {
+	err := a.execute(ctx, args)
+	if errors.Is(err, flag.ErrHelp) {
+		return nil
+	}
+
+	return err
+}
+
+func (a *App) execute(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		err := a.printUsage()
 		if err != nil {
@@ -69,13 +96,15 @@ func (a *App) Execute(ctx context.Context, args []string) error {
 		return a.runLabels(ctx, args[1:])
 	case "export":
 		return a.runExport(ctx, args[1:])
-	case "-h", "--help", "help":
+	case "-h", "--help":
 		err := a.printUsage()
 		if err != nil {
 			return err
 		}
 
 		return nil
+	case "help":
+		return a.runHelp(ctx, args[1:])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -83,11 +112,9 @@ func (a *App) Execute(ctx context.Context, args []string) error {
 
 func (a *App) runInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	fs.SetOutput(a.stderr)
-
 	jsonOut := fs.Bool("json", false, "output JSON")
 
-	err := fs.Parse(args)
+	err := a.parseFlags(fs, args, "usage: tack init [--json]")
 	if err != nil {
 		return err
 	}
@@ -116,14 +143,7 @@ func (a *App) runInit(args []string) error {
 }
 
 func (a *App) runCreate(ctx context.Context, args []string) error {
-	repoRoot, s, err := openRepoStore()
-	if err != nil {
-		return err
-	}
-	defer closeStore(s)
-
 	fs := flag.NewFlagSet("create", flag.ContinueOnError)
-	fs.SetOutput(a.stderr)
 	title := fs.String("title", "", "issue title")
 	kind := fs.String("type", issues.TypeTask, "issue type")
 	priority := fs.String("priority", "medium", "issue priority")
@@ -143,10 +163,20 @@ func (a *App) runCreate(ctx context.Context, args []string) error {
 	fs.Var(&dependsOn, "depends-on", "blocker issue ID (repeatable)")
 	fs.Var(&labels, "label", "label (repeatable)")
 
-	err = fs.Parse(args)
+	err := a.parseFlags(fs, args, "usage: tack create [flags]")
 	if err != nil {
 		return err
 	}
+
+	if fs.NArg() != 0 {
+		return errors.New("usage: tack create [flags]")
+	}
+
+	repoRoot, s, err := openRepoStore()
+	if err != nil {
+		return err
+	}
+	defer closeStore(s)
 
 	desc, err := readLongField(*description, *bodyFile, "")
 	if err != nil {
@@ -207,7 +237,11 @@ func (a *App) runCreate(ctx context.Context, args []string) error {
 
 func (a *App) runSkill(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tack skill install [--home|--path <dir>] [--json]")
+		return errors.New(usageSkillInstall)
+	}
+
+	if isHelpToken(args[0]) {
+		return a.printCommandUsage(a.stdout, usageSkillInstall, nil)
 	}
 
 	switch args[0] {
@@ -220,19 +254,18 @@ func (a *App) runSkill(args []string) error {
 
 func (a *App) runSkillInstall(args []string) error {
 	fs := flag.NewFlagSet("skill install", flag.ContinueOnError)
-	fs.SetOutput(a.stderr)
 	home := fs.Bool("home", false, "install to $HOME/.agents/skills")
 	customPath := fs.String("path", "", "custom skills root")
 
 	jsonOut := fs.Bool("json", false, "output JSON")
 
-	err := fs.Parse(args)
+	err := a.parseFlags(fs, args, usageSkillInstall)
 	if err != nil {
 		return err
 	}
 
 	if fs.NArg() != 0 {
-		return errors.New("usage: tack skill install [--home|--path <dir>] [--json]")
+		return errors.New(usageSkillInstall)
 	}
 
 	if *home && strings.TrimSpace(*customPath) != "" {
@@ -289,33 +322,32 @@ func (a *App) runSkillInstall(args []string) error {
 }
 
 func (a *App) runShow(ctx context.Context, args []string) error {
-	repoRoot, s, err := openRepoStore()
-	if err != nil {
-		return err
+	if len(args) > 0 && isHelpToken(args[0]) {
+		return a.printCommandUsage(a.stdout, usageShow, nil)
 	}
 
-	_ = repoRoot
-
-	defer closeStore(s)
-
 	if len(args) == 0 {
-		return errors.New("usage: tack show <id>")
+		return errors.New(usageShow)
 	}
 
 	id := args[0]
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
-	fs.SetOutput(a.stderr)
-
 	jsonOut := fs.Bool("json", false, "output JSON")
 
-	err = fs.Parse(args[1:])
+	err := a.parseFlags(fs, args[1:], usageShow)
 	if err != nil {
 		return err
 	}
 
 	if fs.NArg() != 0 {
-		return errors.New("usage: tack show <id>")
+		return errors.New(usageShow)
 	}
+
+	_, s, err := openRepoStore()
+	if err != nil {
+		return err
+	}
+	defer closeStore(s)
 
 	issue, err := s.GetIssue(ctx, id)
 	if err != nil {
@@ -330,16 +362,16 @@ func (a *App) runShow(ctx context.Context, args []string) error {
 }
 
 func (a *App) runList(ctx context.Context, args []string) error {
+	filter, jsonOut, err := parseListFilter("list", a.stdout, args)
+	if err != nil {
+		return err
+	}
+
 	_, s, err := openRepoStore()
 	if err != nil {
 		return err
 	}
 	defer closeStore(s)
-
-	filter, jsonOut, err := parseListFilter("list", a.stderr, args)
-	if err != nil {
-		return err
-	}
 
 	issues, err := s.ListIssues(ctx, filter)
 	if err != nil {
@@ -354,16 +386,16 @@ func (a *App) runList(ctx context.Context, args []string) error {
 }
 
 func (a *App) runReady(ctx context.Context, args []string) error {
+	filter, jsonOut, err := parseListFilter("ready", a.stdout, args)
+	if err != nil {
+		return err
+	}
+
 	_, s, err := openRepoStore()
 	if err != nil {
 		return err
 	}
 	defer closeStore(s)
-
-	filter, jsonOut, err := parseListFilter("ready", a.stderr, args)
-	if err != nil {
-		return err
-	}
 
 	issues, err := s.ReadyIssues(ctx, filter)
 	if err != nil {
@@ -378,21 +410,16 @@ func (a *App) runReady(ctx context.Context, args []string) error {
 }
 
 func (a *App) runUpdate(ctx context.Context, args []string) error {
-	repoRoot, s, err := openRepoStore()
-	if err != nil {
-		return err
+	if len(args) > 0 && isHelpToken(args[0]) {
+		return a.printCommandUsage(a.stdout, usageUpdate, nil)
 	}
-	defer closeStore(s)
 
 	if len(args) == 0 {
-		return errors.New("usage: tack update <id> [flags]")
+		return errors.New(usageUpdate)
 	}
 
 	id := args[0]
-
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
-	fs.SetOutput(a.stderr)
-
 	title := &optionalString{}
 	description := &optionalString{}
 	bodyFile := fs.String("body-file", "", "path to description body")
@@ -416,14 +443,20 @@ func (a *App) runUpdate(ctx context.Context, args []string) error {
 	fs.Var(deferredUntil, "deferred-until", "RFC3339 time; empty clears")
 	fs.Var(estimateMinutes, "estimate-minutes", "minutes; empty clears")
 
-	err = fs.Parse(args[1:])
+	err := a.parseFlags(fs, args[1:], usageUpdate)
 	if err != nil {
 		return err
 	}
 
 	if fs.NArg() != 0 {
-		return errors.New("usage: tack update <id> [flags]")
+		return errors.New(usageUpdate)
 	}
+
+	repoRoot, s, err := openRepoStore()
+	if err != nil {
+		return err
+	}
+	defer closeStore(s)
 
 	input := store.UpdateIssueInput{Claim: *claim}
 	if title.set {
@@ -506,31 +539,34 @@ func (a *App) runUpdate(ctx context.Context, args []string) error {
 }
 
 func (a *App) runEdit(ctx context.Context, args []string) error {
-	repoRoot, s, err := openRepoStore()
-	if err != nil {
-		return err
+	if len(args) > 0 && isHelpToken(args[0]) {
+		return a.printCommandUsage(a.stdout, usageEdit, nil)
 	}
-	defer closeStore(s)
 
 	if len(args) == 0 {
-		return errors.New("usage: tack edit <id>")
+		return errors.New(usageEdit)
 	}
 
 	id := args[0]
 	fs := flag.NewFlagSet("edit", flag.ContinueOnError)
-	fs.SetOutput(a.stderr)
 	jsonOut := fs.Bool("json", false, "output JSON")
 
 	actorFlag := fs.String("actor", "", "actor override")
 
-	err = fs.Parse(args[1:])
+	err := a.parseFlags(fs, args[1:], usageEdit)
 	if err != nil {
 		return err
 	}
 
 	if fs.NArg() != 0 {
-		return errors.New("usage: tack edit <id>")
+		return errors.New(usageEdit)
 	}
+
+	repoRoot, s, err := openRepoStore()
+	if err != nil {
+		return err
+	}
+	defer closeStore(s)
 
 	current, err := s.GetIssue(ctx, id)
 	if err != nil {
@@ -597,37 +633,41 @@ func (a *App) runReopen(ctx context.Context, args []string) error {
 }
 
 func (a *App) runCloseLike(ctx context.Context, args []string, closeIssue bool) error {
-	repoRoot, s, err := openRepoStore()
-	if err != nil {
-		return err
-	}
-	defer closeStore(s)
-
 	name := "close"
 	if !closeIssue {
 		name = "reopen"
 	}
 
+	usage := fmt.Sprintf("usage: tack %s <id> [--reason ...]", name)
+	if len(args) > 0 && isHelpToken(args[0]) {
+		return a.printCommandUsage(a.stdout, usage, nil)
+	}
+
 	if len(args) == 0 {
-		return fmt.Errorf("usage: tack %s <id> [--reason ...]", name)
+		return errors.New(usage)
 	}
 
 	id := args[0]
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(a.stderr)
 	reason := fs.String("reason", "", "reason for transition")
 	jsonOut := fs.Bool("json", false, "output JSON")
 
 	actorFlag := fs.String("actor", "", "actor override")
 
-	err = fs.Parse(args[1:])
+	err := a.parseFlags(fs, args[1:], usage)
 	if err != nil {
 		return err
 	}
 
 	if fs.NArg() != 0 {
-		return fmt.Errorf("usage: tack %s <id> [--reason ...]", name)
+		return errors.New(usage)
 	}
+
+	repoRoot, s, err := openRepoStore()
+	if err != nil {
+		return err
+	}
+	defer closeStore(s)
 
 	if closeIssue && strings.TrimSpace(*reason) == "" {
 		return errors.New("--reason is required")
@@ -658,7 +698,11 @@ func (a *App) runCloseLike(ctx context.Context, args []string, closeIssue bool) 
 
 func (a *App) runComment(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tack comment add|list")
+		return errors.New(usageComment)
+	}
+
+	if isHelpToken(args[0]) {
+		return a.printCommandUsage(a.stdout, usageComment, nil)
 	}
 
 	switch args[0] {
@@ -672,33 +716,36 @@ func (a *App) runComment(ctx context.Context, args []string) error {
 }
 
 func (a *App) runCommentAdd(ctx context.Context, args []string) error {
-	repoRoot, s, err := openRepoStore()
-	if err != nil {
-		return err
+	if len(args) > 0 && isHelpToken(args[0]) {
+		return a.printCommandUsage(a.stdout, usageCommentAdd, nil)
 	}
-	defer closeStore(s)
 
 	if len(args) == 0 {
-		return errors.New("usage: tack comment add <id> [--body|--body-file]")
+		return errors.New(usageCommentAdd)
 	}
 
 	id := args[0]
 	fs := flag.NewFlagSet("comment add", flag.ContinueOnError)
-	fs.SetOutput(a.stderr)
 	body := fs.String("body", "", "comment body")
 	bodyFile := fs.String("body-file", "", "path to comment body")
 	jsonOut := fs.Bool("json", false, "output JSON")
 
 	actorFlag := fs.String("actor", "", "actor override")
 
-	err = fs.Parse(args[1:])
+	err := a.parseFlags(fs, args[1:], usageCommentAdd)
 	if err != nil {
 		return err
 	}
 
 	if fs.NArg() != 0 {
-		return errors.New("usage: tack comment add <id> [--body|--body-file]")
+		return errors.New(usageCommentAdd)
 	}
+
+	repoRoot, s, err := openRepoStore()
+	if err != nil {
+		return err
+	}
+	defer closeStore(s)
 
 	text, err := readLongField(*body, *bodyFile, "")
 	if err != nil {
@@ -732,30 +779,32 @@ func (a *App) runCommentAdd(ctx context.Context, args []string) error {
 }
 
 func (a *App) runCommentList(ctx context.Context, args []string) error {
-	_, s, err := openRepoStore()
-	if err != nil {
-		return err
+	if len(args) > 0 && isHelpToken(args[0]) {
+		return a.printCommandUsage(a.stdout, usageCommentList, nil)
 	}
-	defer closeStore(s)
 
 	if len(args) == 0 {
-		return errors.New("usage: tack comment list <id>")
+		return errors.New(usageCommentList)
 	}
 
 	id := args[0]
 	fs := flag.NewFlagSet("comment list", flag.ContinueOnError)
-	fs.SetOutput(a.stderr)
-
 	jsonOut := fs.Bool("json", false, "output JSON")
 
-	err = fs.Parse(args[1:])
+	err := a.parseFlags(fs, args[1:], usageCommentList)
 	if err != nil {
 		return err
 	}
 
 	if fs.NArg() != 0 {
-		return errors.New("usage: tack comment list <id>")
+		return errors.New(usageCommentList)
 	}
+
+	_, s, err := openRepoStore()
+	if err != nil {
+		return err
+	}
+	defer closeStore(s)
 
 	comments, err := s.ListComments(ctx, id)
 	if err != nil {
@@ -778,7 +827,11 @@ func (a *App) runCommentList(ctx context.Context, args []string) error {
 
 func (a *App) runDep(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tack dep add|remove|list")
+		return errors.New(usageDep)
+	}
+
+	if isHelpToken(args[0]) {
+		return a.printCommandUsage(a.stdout, usageDep, nil)
 	}
 
 	switch args[0] {
@@ -794,31 +847,34 @@ func (a *App) runDep(ctx context.Context, args []string) error {
 }
 
 func (a *App) runDepAdd(ctx context.Context, args []string) error {
-	repoRoot, s, err := openRepoStore()
-	if err != nil {
-		return err
+	if len(args) > 0 && isHelpToken(args[0]) {
+		return a.printCommandUsage(a.stdout, usageDepAdd, nil)
 	}
-	defer closeStore(s)
 
 	if len(args) < 2 {
-		return errors.New("usage: tack dep add <blocked-id> <blocker-id>")
+		return errors.New(usageDepAdd)
 	}
 
 	blockedID, blockerID := args[0], args[1]
 	fs := flag.NewFlagSet("dep add", flag.ContinueOnError)
-	fs.SetOutput(a.stderr)
 	jsonOut := fs.Bool("json", false, "output JSON")
 
 	actorFlag := fs.String("actor", "", "actor override")
 
-	err = fs.Parse(args[2:])
+	err := a.parseFlags(fs, args[2:], usageDepAdd)
 	if err != nil {
 		return err
 	}
 
 	if fs.NArg() != 0 {
-		return errors.New("usage: tack dep add <blocked-id> <blocker-id>")
+		return errors.New(usageDepAdd)
 	}
+
+	repoRoot, s, err := openRepoStore()
+	if err != nil {
+		return err
+	}
+	defer closeStore(s)
 
 	actor, err := issues.ResolveActor(repoRoot, *actorFlag)
 	if err != nil {
@@ -840,30 +896,32 @@ func (a *App) runDepAdd(ctx context.Context, args []string) error {
 }
 
 func (a *App) runDepRemove(ctx context.Context, args []string) error {
-	repoRoot, s, err := openRepoStore()
-	if err != nil {
-		return err
+	if len(args) > 0 && isHelpToken(args[0]) {
+		return a.printCommandUsage(a.stdout, usageDepRemove, nil)
 	}
-	defer closeStore(s)
 
 	if len(args) < 2 {
-		return errors.New("usage: tack dep remove <blocked-id> <blocker-id>")
+		return errors.New(usageDepRemove)
 	}
 
 	blockedID, blockerID := args[0], args[1]
 	fs := flag.NewFlagSet("dep remove", flag.ContinueOnError)
-	fs.SetOutput(a.stderr)
-
 	actorFlag := fs.String("actor", "", "actor override")
 
-	err = fs.Parse(args[2:])
+	err := a.parseFlags(fs, args[2:], usageDepRemove)
 	if err != nil {
 		return err
 	}
 
 	if fs.NArg() != 0 {
-		return errors.New("usage: tack dep remove <blocked-id> <blocker-id>")
+		return errors.New(usageDepRemove)
 	}
+
+	repoRoot, s, err := openRepoStore()
+	if err != nil {
+		return err
+	}
+	defer closeStore(s)
 
 	actor, err := issues.ResolveActor(repoRoot, *actorFlag)
 	if err != nil {
@@ -881,30 +939,32 @@ func (a *App) runDepRemove(ctx context.Context, args []string) error {
 }
 
 func (a *App) runDepList(ctx context.Context, args []string) error {
-	_, s, err := openRepoStore()
-	if err != nil {
-		return err
+	if len(args) > 0 && isHelpToken(args[0]) {
+		return a.printCommandUsage(a.stdout, usageDepList, nil)
 	}
-	defer closeStore(s)
 
 	if len(args) == 0 {
-		return errors.New("usage: tack dep list <id>")
+		return errors.New(usageDepList)
 	}
 
 	id := args[0]
 	fs := flag.NewFlagSet("dep list", flag.ContinueOnError)
-	fs.SetOutput(a.stderr)
-
 	jsonOut := fs.Bool("json", false, "output JSON")
 
-	err = fs.Parse(args[1:])
+	err := a.parseFlags(fs, args[1:], usageDepList)
 	if err != nil {
 		return err
 	}
 
 	if fs.NArg() != 0 {
-		return errors.New("usage: tack dep list <id>")
+		return errors.New(usageDepList)
 	}
+
+	_, s, err := openRepoStore()
+	if err != nil {
+		return err
+	}
+	defer closeStore(s)
 
 	list, err := s.ListDependencies(ctx, id)
 	if err != nil {
@@ -922,7 +982,11 @@ func (a *App) runDepList(ctx context.Context, args []string) error {
 
 func (a *App) runLabels(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tack labels add|remove|list")
+		return errors.New(usageLabels)
+	}
+
+	if isHelpToken(args[0]) {
+		return a.printCommandUsage(a.stdout, usageLabels, nil)
 	}
 
 	switch args[0] {
@@ -938,38 +1002,43 @@ func (a *App) runLabels(ctx context.Context, args []string) error {
 }
 
 func (a *App) runLabelsAdd(ctx context.Context, args []string) error {
+	if len(args) > 0 && isHelpToken(args[0]) {
+		return a.printCommandUsage(a.stdout, usageLabelsAdd, nil)
+	}
+
+	if len(args) == 0 {
+		return errors.New(usageLabelsAdd)
+	}
+
+	id := args[0]
+	fs := flag.NewFlagSet("labels add", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "output JSON")
+
+	actorFlag := fs.String("actor", "", "actor override")
+
+	err := a.parseFlags(fs, args[1:], usageLabelsAdd)
+	if err != nil {
+		return err
+	}
+
+	if fs.NArg() < 1 {
+		return errors.New(usageLabelsAdd)
+	}
+
 	repoRoot, s, err := openRepoStore()
 	if err != nil {
 		return err
 	}
 	defer closeStore(s)
 
-	if len(args) == 0 {
-		return errors.New("usage: tack labels add <id> <label> [label...]")
-	}
-
-	id := args[0]
-	fs := flag.NewFlagSet("labels add", flag.ContinueOnError)
-	fs.SetOutput(a.stderr)
-	jsonOut := fs.Bool("json", false, "output JSON")
-
-	actorFlag := fs.String("actor", "", "actor override")
-
-	err = fs.Parse(args[1:])
-	if err != nil {
-		return err
-	}
-
-	if fs.NArg() < 1 {
-		return errors.New("usage: tack labels add <id> <label> [label...]")
-	}
+	labelsToAdd := fs.Args()
 
 	actor, err := issues.ResolveActor(repoRoot, *actorFlag)
 	if err != nil {
 		return err
 	}
 
-	labels, err := s.AddLabels(ctx, id, fs.Args(), actor)
+	labels, err := s.AddLabels(ctx, id, labelsToAdd, actor)
 	if err != nil {
 		return err
 	}
@@ -984,38 +1053,43 @@ func (a *App) runLabelsAdd(ctx context.Context, args []string) error {
 }
 
 func (a *App) runLabelsRemove(ctx context.Context, args []string) error {
+	if len(args) > 0 && isHelpToken(args[0]) {
+		return a.printCommandUsage(a.stdout, usageLabelsRemove, nil)
+	}
+
+	if len(args) == 0 {
+		return errors.New(usageLabelsRemove)
+	}
+
+	id := args[0]
+	fs := flag.NewFlagSet("labels remove", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "output JSON")
+
+	actorFlag := fs.String("actor", "", "actor override")
+
+	err := a.parseFlags(fs, args[1:], usageLabelsRemove)
+	if err != nil {
+		return err
+	}
+
+	if fs.NArg() < 1 {
+		return errors.New(usageLabelsRemove)
+	}
+
 	repoRoot, s, err := openRepoStore()
 	if err != nil {
 		return err
 	}
 	defer closeStore(s)
 
-	if len(args) == 0 {
-		return errors.New("usage: tack labels remove <id> <label> [label...]")
-	}
-
-	id := args[0]
-	fs := flag.NewFlagSet("labels remove", flag.ContinueOnError)
-	fs.SetOutput(a.stderr)
-	jsonOut := fs.Bool("json", false, "output JSON")
-
-	actorFlag := fs.String("actor", "", "actor override")
-
-	err = fs.Parse(args[1:])
-	if err != nil {
-		return err
-	}
-
-	if fs.NArg() < 1 {
-		return errors.New("usage: tack labels remove <id> <label> [label...]")
-	}
+	labelsToRemove := fs.Args()
 
 	actor, err := issues.ResolveActor(repoRoot, *actorFlag)
 	if err != nil {
 		return err
 	}
 
-	labels, err := s.RemoveLabels(ctx, id, fs.Args(), actor)
+	labels, err := s.RemoveLabels(ctx, id, labelsToRemove, actor)
 	if err != nil {
 		return err
 	}
@@ -1030,30 +1104,32 @@ func (a *App) runLabelsRemove(ctx context.Context, args []string) error {
 }
 
 func (a *App) runLabelsList(ctx context.Context, args []string) error {
-	_, s, err := openRepoStore()
-	if err != nil {
-		return err
+	if len(args) > 0 && isHelpToken(args[0]) {
+		return a.printCommandUsage(a.stdout, usageLabelsList, nil)
 	}
-	defer closeStore(s)
 
 	if len(args) == 0 {
-		return errors.New("usage: tack labels list <id>")
+		return errors.New(usageLabelsList)
 	}
 
 	id := args[0]
 	fs := flag.NewFlagSet("labels list", flag.ContinueOnError)
-	fs.SetOutput(a.stderr)
-
 	jsonOut := fs.Bool("json", false, "output JSON")
 
-	err = fs.Parse(args[1:])
+	err := a.parseFlags(fs, args[1:], usageLabelsList)
 	if err != nil {
 		return err
 	}
 
 	if fs.NArg() != 0 {
-		return errors.New("usage: tack labels list <id>")
+		return errors.New(usageLabelsList)
 	}
+
+	_, s, err := openRepoStore()
+	if err != nil {
+		return err
+	}
+	defer closeStore(s)
 
 	labels, err := s.ListLabels(ctx, id)
 	if err != nil {
@@ -1070,18 +1146,10 @@ func (a *App) runLabelsList(ctx context.Context, args []string) error {
 }
 
 func (a *App) runExport(ctx context.Context, args []string) error {
-	_, s, err := openRepoStore()
-	if err != nil {
-		return err
-	}
-	defer closeStore(s)
-
 	fs := flag.NewFlagSet("export", flag.ContinueOnError)
-	fs.SetOutput(a.stderr)
-
 	jsonOut := fs.Bool("json", true, "output JSON")
 
-	err = fs.Parse(args)
+	err := a.parseFlags(fs, args, "usage: tack export --json")
 	if err != nil {
 		return err
 	}
@@ -1089,6 +1157,12 @@ func (a *App) runExport(ctx context.Context, args []string) error {
 	if !*jsonOut {
 		return errors.New("export only supports JSON")
 	}
+
+	_, s, err := openRepoStore()
+	if err != nil {
+		return err
+	}
+	defer closeStore(s)
 
 	data, err := s.Export(ctx)
 	if err != nil {
@@ -1098,9 +1172,8 @@ func (a *App) runExport(ctx context.Context, args []string) error {
 	return writeJSON(a.stdout, data)
 }
 
-func parseListFilter(name string, stderr io.Writer, args []string) (store.ListFilter, bool, error) {
+func parseListFilter(name string, helpOutput io.Writer, args []string) (store.ListFilter, bool, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(stderr)
 	status := fs.String("status", "", "status filter")
 	assignee := fs.String("assignee", "", "assignee filter")
 	label := fs.String("label", "", "label filter")
@@ -1109,7 +1182,7 @@ func parseListFilter(name string, stderr io.Writer, args []string) (store.ListFi
 
 	jsonOut := fs.Bool("json", false, "output JSON")
 
-	err := fs.Parse(args)
+	err := parseFlagSet(fs, helpOutput, args, fmt.Sprintf("usage: tack %s [flags]", name))
 	if err != nil {
 		return store.ListFilter{}, false, err
 	}
@@ -1236,6 +1309,119 @@ func (a *App) printUsage() error {
   tack export --json`)
 
 	return err
+}
+
+func (a *App) runHelp(ctx context.Context, args []string) error {
+	if len(args) == 0 || isHelpToken(args[0]) {
+		return a.printUsage()
+	}
+
+	withHelp := append(args[1:], "--help")
+
+	switch args[0] {
+	case "init":
+		return a.runInit(withHelp)
+	case "create":
+		return a.runCreate(ctx, withHelp)
+	case "show":
+		return a.runShow(ctx, withHelp)
+	case "list":
+		return a.runList(ctx, withHelp)
+	case "ready":
+		return a.runReady(ctx, withHelp)
+	case "update":
+		return a.runUpdate(ctx, withHelp)
+	case "edit":
+		return a.runEdit(ctx, withHelp)
+	case "close":
+		return a.runClose(ctx, withHelp)
+	case "reopen":
+		return a.runReopen(ctx, withHelp)
+	case "comment":
+		return a.runComment(ctx, withHelp)
+	case "dep":
+		return a.runDep(ctx, withHelp)
+	case "skill":
+		return a.runSkill(withHelp)
+	case "labels":
+		return a.runLabels(ctx, withHelp)
+	case "export":
+		return a.runExport(ctx, withHelp)
+	default:
+		return fmt.Errorf("unknown command %q", args[0])
+	}
+}
+
+func (a *App) parseFlags(fs *flag.FlagSet, args []string, usage string) error {
+	return parseFlagSet(fs, a.stdout, args, usage)
+}
+
+func parseFlagSet(fs *flag.FlagSet, helpOutput io.Writer, args []string, usage string) error {
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {}
+
+	err := fs.Parse(args)
+	if err == nil {
+		return nil
+	}
+
+	if errors.Is(err, flag.ErrHelp) {
+		usageErr := printFlagUsage(helpOutput, usage, fs)
+		if usageErr != nil {
+			return usageErr
+		}
+
+		return flag.ErrHelp
+	}
+
+	return err
+}
+
+func printFlagUsage(w io.Writer, usage string, fs *flag.FlagSet) error {
+	return printUsageWithDefaults(w, usage, func(out io.Writer) error {
+		hasFlags := false
+
+		fs.VisitAll(func(*flag.Flag) {
+			hasFlags = true
+		})
+
+		if !hasFlags {
+			return nil
+		}
+
+		previousOutput := fs.Output()
+		fs.SetOutput(out)
+		fs.PrintDefaults()
+		fs.SetOutput(previousOutput)
+
+		return nil
+	})
+}
+
+func (a *App) printCommandUsage(w io.Writer, usage string, defaults func(io.Writer) error) error {
+	return printUsageWithDefaults(w, usage, defaults)
+}
+
+func printUsageWithDefaults(w io.Writer, usage string, defaults func(io.Writer) error) error {
+	_, err := fmt.Fprintln(w, usage)
+	if err != nil {
+		return err
+	}
+
+	if defaults == nil {
+		return nil
+	}
+
+	_, err = fmt.Fprintln(w)
+	if err != nil {
+		return err
+	}
+
+	return defaults(w)
+}
+
+func isHelpToken(arg string) bool {
+	return arg == "-h" || arg == "--help"
 }
 
 func closeStore(s *store.Store) {

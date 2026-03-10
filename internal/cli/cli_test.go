@@ -155,6 +155,95 @@ func TestSkillInstallRejectsConflictingTargets(t *testing.T) {
 	}
 }
 
+func TestHelpCommandMatchesFlagHelp(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+
+	cases := []struct {
+		name    string
+		direct  []string
+		viaHelp []string
+		want    string
+	}{
+		{
+			name:    "top level",
+			direct:  []string{"--help"},
+			viaHelp: []string{"help"},
+			want:    "tack commands:",
+		},
+		{
+			name:    "update",
+			direct:  []string{"update", "--help"},
+			viaHelp: []string{"help", "update"},
+			want:    "usage: tack update <id> [flags]",
+		},
+		{
+			name:    "comment group",
+			direct:  []string{"comment", "--help"},
+			viaHelp: []string{"help", "comment"},
+			want:    "usage: tack comment add|list",
+		},
+		{
+			name:    "comment add",
+			direct:  []string{"comment", "add", "--help"},
+			viaHelp: []string{"help", "comment", "add"},
+			want:    "usage: tack comment add <id> [--body|--body-file]",
+		},
+		{
+			name:    "dep group",
+			direct:  []string{"dep", "--help"},
+			viaHelp: []string{"help", "dep"},
+			want:    "usage: tack dep add|remove|list",
+		},
+		{
+			name:    "dep add",
+			direct:  []string{"dep", "add", "--help"},
+			viaHelp: []string{"help", "dep", "add"},
+			want:    "usage: tack dep add <blocked-id> <blocker-id>",
+		},
+		{
+			name:    "labels group",
+			direct:  []string{"labels", "--help"},
+			viaHelp: []string{"help", "labels"},
+			want:    "usage: tack labels add|remove|list",
+		},
+		{
+			name:    "labels add",
+			direct:  []string{"labels", "add", "--help"},
+			viaHelp: []string{"help", "labels", "add"},
+			want:    "usage: tack labels add <id> <label> [label...]",
+		},
+		{
+			name:    "skill install",
+			direct:  []string{"skill", "install", "--help"},
+			viaHelp: []string{"help", "skill", "install"},
+			want:    "usage: tack skill install [--home|--path <dir>] [--json]",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			directOut, err := runCLIBytes(repo, tc.direct...)
+			if err != nil {
+				t.Fatalf("direct help %v failed: %v", tc.direct, err)
+			}
+
+			helpOut, err := runCLIBytes(repo, tc.viaHelp...)
+			if err != nil {
+				t.Fatalf("help route %v failed: %v", tc.viaHelp, err)
+			}
+
+			if string(directOut) != string(helpOut) {
+				t.Fatalf("mismatched help output\ndirect:\n%s\nhelp:\n%s", string(directOut), string(helpOut))
+			}
+
+			if !strings.Contains(string(directOut), tc.want) {
+				t.Fatalf("expected help output to contain %q, got %q", tc.want, string(directOut))
+			}
+		})
+	}
+}
+
 func TestCreateClaimReadyCloseAndCommentJSON(t *testing.T) {
 	repo := testutil.TempRepo(t)
 	testutil.Chdir(t, repo)
