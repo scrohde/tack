@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -69,6 +70,9 @@ type model struct {
 	activeTab detailTab
 	showHelp  bool
 
+	filterInputActive bool
+	filterInput       string
+
 	detailView       issues.IssueDetailView
 	focusedGraphView issues.FocusedGraphView
 	projectGraphView issues.ProjectGraphView
@@ -84,12 +88,13 @@ func Run(ctx context.Context, stdout, _ io.Writer, options StartupOptions) error
 	if err != nil {
 		return err
 	}
-	defer closeStore(s)
 
 	m, err := newModel(ctx, repoRoot, s, options)
 	if err != nil {
+		closeReader(s)
 		return err
 	}
+	defer m.closeReader()
 
 	if stdout == nil {
 		return nil
@@ -154,11 +159,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) handleKey(key string) tea.Cmd {
+	if m.filterInputActive {
+		return m.handleFilterInputKey(key)
+	}
+
 	switch key {
 	case "q":
 		return tea.Quit
 	case "?":
 		m.showHelp = !m.showHelp
+	case "/":
+		m.filterInputActive = true
+		m.filterInput = ""
 	case "tab":
 		m.advanceFocusOrTab()
 	case "shift+tab":
@@ -201,13 +213,25 @@ func (m *model) View() tea.View {
 }
 
 func (m *model) render() string {
-	if m.width < 60 || m.height < 12 {
-		return m.renderCompactWarning()
-	}
-
 	header := headerStyle.Render(m.renderHeader())
 	footer := footerStyle.Render(m.renderFooter())
-	bodyHeight := maxInt(8, m.height-6)
+	parts := []string{header}
+
+	if m.filterInputActive {
+		parts = append(parts, filterStyle.Render(m.renderFilterEditor()))
+	}
+
+	if m.width < 60 || m.height < 12 {
+		parts = append(parts, m.renderCompactLayout(), footer)
+
+		if m.showHelp {
+			parts = append(parts, helpStyle.Render(m.renderExpandedHelp()))
+		}
+
+		return lipgloss.JoinVertical(lipgloss.Left, parts...)
+	}
+
+	bodyHeight := maxInt(8, m.height-6-len(parts)+1)
 
 	var body string
 
@@ -225,7 +249,7 @@ func (m *model) render() string {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	}
 
-	rendered := []string{header, body, footer}
+	rendered := append(parts, body, footer)
 
 	if m.showHelp {
 		rendered = append(rendered, helpStyle.Render(m.renderExpandedHelp()))
@@ -234,18 +258,18 @@ func (m *model) render() string {
 	return lipgloss.JoinVertical(lipgloss.Left, rendered...)
 }
 
-func (m *model) renderCompactWarning() string {
-	lines := []string{
-		"Terminal too small for the full tack TUI.",
-		fmt.Sprintf("Need about 60x12, have %dx%d.", m.width, m.height),
-		fmt.Sprintf("source=%s filter=%s results=%d", m.source, formatFilter(m.filter), len(m.summaries)),
+func (m *model) renderCompactLayout() string {
+	sections := []string{
+		compactWarningStyle.Render(fmt.Sprintf("Compact single-column layout (%dx%d). Full layout needs about 60x12.", m.width, m.height)),
+		"",
+		compactSectionStyle.Render("Issues"),
+		m.renderBrowserBody(),
+		"",
+		compactSectionStyle.Render(detailTabNames[m.activeTab]),
+		m.renderActiveTabBody(),
 	}
 
-	if summary := m.selectedSummary(); summary != nil {
-		lines = append(lines, "selected="+summary.ID+" "+summary.Title)
-	}
-
-	return strings.Join(lines, "\n")
+	return strings.Join(sections, "\n")
 }
 
 func (m *model) renderHeader() string {
@@ -280,7 +304,7 @@ func (m *model) renderHeader() string {
 }
 
 func (m *model) renderFooter() string {
-	return "q quit  tab/shift+tab switch  j/k move  enter pin  esc browser  ? help  r toggle source  ctrl+r refresh  g/G graph tabs"
+	return "q quit  / filters  tab/shift+tab switch  j/k move  enter pin  esc back  ? help  r toggle source  ctrl+r refresh  g/G graph tabs"
 }
 
 func (m *model) renderExpandedHelp() string {
@@ -288,6 +312,7 @@ func (m *model) renderExpandedHelp() string {
 		"Controls",
 		"q quit, ? toggle help, tab/shift+tab switch panes or tabs",
 		"j/k and arrows move the issue selection",
+		"/ opens filter editing; use status=, type=, label=, assignee=, limit=, or reset",
 		"enter pins the selected issue in the detail pane",
 		"esc returns focus to the browser and clears the current pin",
 		"r toggles between all issues and ready issues, ctrl+r refreshes from disk",
@@ -296,35 +321,12 @@ func (m *model) renderExpandedHelp() string {
 }
 
 func (m *model) renderBrowserPane(width, height int) string {
-	rows := []string{}
-
-	if len(m.summaries) == 0 {
-		rows = append(rows, "No matching issues.")
-	} else {
-		for i, summary := range m.summaries {
-			marker := " "
-			if i == m.selected {
-				marker = ">"
-			}
-
-			pin := " "
-			if summary.ID == m.currentDetailID() {
-				pin = "*"
-			}
-
-			line := fmt.Sprintf("%s%s %-6s %-11s %-8s %s", marker, pin, summary.ID, summary.Status, summary.Type, summary.Title)
-			rows = append(rows, styleIssueLine(summary, i == m.selected, summary.ID == m.currentDetailID()).Render(line))
-		}
-	}
-
-	body := strings.Join(rows, "\n")
-
 	title := "Issue Browser"
 	if m.focus == paneBrowser {
 		title += " [active]"
 	}
 
-	return paneStyle(width, height, m.focus == paneBrowser).Render(title + "\n\n" + body)
+	return paneStyle(width, height, m.focus == paneBrowser).Render(title + "\n\n" + m.renderBrowserBody())
 }
 
 func (m *model) renderDetailPane(width, height int) string {
@@ -367,7 +369,7 @@ func (m *model) renderActiveTabBody() string {
 
 func (m *model) renderDetailsTab() string {
 	if m.currentDetailID() == "" {
-		return "Select an issue to inspect."
+		return m.renderEmptyDetailState()
 	}
 
 	issue := m.detailView.Issue
@@ -375,11 +377,19 @@ func (m *model) renderDetailsTab() string {
 		fmt.Sprintf("%s  %s", issue.ID, issue.Title),
 		fmt.Sprintf("status=%s  type=%s  priority=%s  assignee=%s", issue.Status, issue.Type, issue.Priority, blankIfEmpty(issue.Assignee)),
 		fmt.Sprintf("labels=%s", formatLabels(issue.Labels)),
-		fmt.Sprintf("parent=%s", blankIfEmpty(issue.ParentID)),
-		fmt.Sprintf("blocked_by=%s", formatLinkIDs(m.detailView.Dependencies.BlockedBy, func(link issues.Link) string { return link.SourceID })),
-		fmt.Sprintf("blocks=%s", formatLinkIDs(m.detailView.Dependencies.Blocks, func(link issues.Link) string { return link.TargetID })),
 		"",
-		issue.Description,
+		"Parent",
+		m.renderRelatedSummary(issue.ParentID),
+		"",
+		"Blocked By",
+		m.renderRelatedLinks(m.detailView.Dependencies.BlockedBy, func(link issues.Link) string { return link.SourceID }),
+		"",
+		"Blocks",
+		m.renderRelatedLinks(m.detailView.Dependencies.Blocks, func(link issues.Link) string { return link.TargetID }),
+	}
+
+	if strings.TrimSpace(issue.Description) != "" {
+		lines = append(lines, "", "Description", issue.Description)
 	}
 
 	return strings.Join(lines, "\n")
@@ -387,21 +397,25 @@ func (m *model) renderDetailsTab() string {
 
 func (m *model) renderCommentsTab() string {
 	if m.currentDetailID() == "" {
-		return "Select an issue to inspect."
+		return m.renderEmptyDetailState()
+	}
+
+	lines := []string{
+		fmt.Sprintf("%s  %d comment(s)", m.detailView.Issue.ID, len(m.detailView.Comments)),
 	}
 
 	if len(m.detailView.Comments) == 0 {
-		return "No comments."
+		lines = append(lines, "", "No comments yet.")
+		return strings.Join(lines, "\n")
 	}
 
-	lines := []string{}
 	for _, comment := range m.detailView.Comments {
+		lines = append(lines, "")
 		lines = append(lines, fmt.Sprintf("%s  %s", comment.Author, comment.CreatedAt.Format("2006-01-02 15:04")))
 		lines = append(lines, comment.Body)
-		lines = append(lines, "")
 	}
 
-	return strings.TrimSpace(strings.Join(lines, "\n"))
+	return strings.Join(lines, "\n")
 }
 
 func (m *model) renderFocusedGraphTab() string {
@@ -535,7 +549,13 @@ func (m *model) toggleSource() {
 }
 
 func (m *model) refresh() {
-	err := m.reload()
+	err := m.reopenReader()
+	if err != nil {
+		m.lastError = err
+		return
+	}
+
+	err = m.reload()
 	if err != nil {
 		m.lastError = err
 	}
@@ -615,6 +635,41 @@ func (m *model) syncDetailViews() {
 	m.lastError = nil
 }
 
+func (m *model) handleFilterInputKey(key string) tea.Cmd {
+	switch key {
+	case "esc":
+		m.filterInputActive = false
+		m.filterInput = ""
+	case "enter":
+		next, err := parseFilterInput(m.filter, m.filterInput)
+		if err != nil {
+			m.lastError = err
+			return nil
+		}
+
+		m.filter = next
+		m.filterInputActive = false
+		m.filterInput = ""
+
+		err = m.reload()
+		if err != nil {
+			m.lastError = err
+		}
+	case "backspace", "ctrl+h":
+		if len(m.filterInput) > 0 {
+			m.filterInput = m.filterInput[:len(m.filterInput)-1]
+		}
+	case "space":
+		m.filterInput += " "
+	default:
+		if len(key) == 1 {
+			m.filterInput += key
+		}
+	}
+
+	return nil
+}
+
 func (m *model) currentDetailID() string {
 	if m.pinnedID != "" {
 		return m.pinnedID
@@ -646,6 +701,122 @@ func (m *model) hasSummary(id string) bool {
 	return false
 }
 
+func (m *model) renderFilterEditor() string {
+	lines := []string{
+		fmt.Sprintf("Filter editor  current: %s", formatFilter(m.filter)),
+		"Apply changes with key=value tokens (status, type, label, assignee, limit) or use reset.",
+		"> " + m.filterInput,
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func (m *model) renderBrowserBody() string {
+	if m.isEmptyRepo() {
+		return strings.Join([]string{
+			"No issues yet.",
+			"Create one with `tack create --title \"...\" --type task --priority medium`.",
+			"Or import a plan with `tack import --file plan.json`.",
+		}, "\n")
+	}
+
+	if len(m.summaries) == 0 {
+		return strings.Join([]string{
+			"No matching issues.",
+			fmt.Sprintf("Current filters: %s", formatFilter(m.filter)),
+			"Press / to adjust filters or r to toggle ready/all.",
+		}, "\n")
+	}
+
+	rows := make([]string, 0, len(m.summaries))
+	for i, summary := range m.summaries {
+		marker := " "
+		if i == m.selected {
+			marker = ">"
+		}
+
+		pin := " "
+		if summary.ID == m.currentDetailID() {
+			pin = "*"
+		}
+
+		line := fmt.Sprintf("%s%s %-6s %-11s %-8s %s", marker, pin, summary.ID, summary.Status, summary.Type, summary.Title)
+		rows = append(rows, styleIssueLine(summary, i == m.selected, summary.ID == m.currentDetailID()).Render(line))
+	}
+
+	return strings.Join(rows, "\n")
+}
+
+func (m *model) renderEmptyDetailState() string {
+	if m.isEmptyRepo() {
+		return strings.Join([]string{
+			"Start by creating or importing issues.",
+			"`tack create` adds a single issue.",
+			"`tack import --file plan.json` imports a linked plan.",
+		}, "\n")
+	}
+
+	if len(m.summaries) == 0 {
+		return "No matching issues for the current filters."
+	}
+
+	return "Select an issue to inspect."
+}
+
+func (m *model) isEmptyRepo() bool {
+	return len(m.summaries) == 0 && len(m.projectGraphView.Issues) == 0
+}
+
+func (m *model) renderRelatedSummary(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "(none)"
+	}
+
+	summary, ok := m.detailView.RelatedSummaries[id]
+	if !ok {
+		return id
+	}
+
+	return summaryLine(summary)
+}
+
+func (m *model) renderRelatedLinks(links []issues.Link, id func(issues.Link) string) string {
+	if len(links) == 0 {
+		return "(none)"
+	}
+
+	lines := make([]string, 0, len(links))
+	for _, link := range links {
+		lines = append(lines, m.renderRelatedSummary(id(link)))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func (m *model) reopenReader() error {
+	storeReader, ok := m.reader.(*store.Store)
+	if !ok {
+		return nil
+	}
+
+	repoRoot, reopened, err := store.OpenRepo(m.repoRoot)
+	if err != nil {
+		return err
+	}
+
+	m.repoRoot = repoRoot
+	m.reader = reopened
+
+	closeReader(storeReader)
+
+	return nil
+}
+
+func (m *model) closeReader() {
+	closeReader(m.reader)
+}
+
 func renderFocusedGroup(ids []string, summaries map[string]issues.IssueSummary) string {
 	if len(ids) == 0 {
 		return "(none)"
@@ -667,6 +838,64 @@ func renderFocusedGroup(ids []string, summaries map[string]issues.IssueSummary) 
 
 func summaryLine(summary issues.IssueSummary) string {
 	return fmt.Sprintf("%s  [%s] %s", summary.ID, summary.Status, summary.Title)
+}
+
+func parseFilterInput(current store.ListFilter, input string) (store.ListFilter, error) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return current, nil
+	}
+
+	if trimmed == "reset" {
+		return store.ListFilter{}, nil
+	}
+
+	next := current
+
+	for _, token := range strings.Fields(trimmed) {
+		key, value, ok := strings.Cut(token, "=")
+		if !ok {
+			return store.ListFilter{}, fmt.Errorf("invalid filter token %q", token)
+		}
+
+		key = strings.TrimSpace(strings.ToLower(key))
+		value = strings.TrimSpace(value)
+
+		switch key {
+		case "status":
+			if value != "" && !issues.IsValidStatus(value) {
+				return store.ListFilter{}, fmt.Errorf("invalid status %q", value)
+			}
+
+			next.Status = value
+		case "type":
+			if value != "" && !issues.IsValidType(value) {
+				return store.ListFilter{}, fmt.Errorf("invalid type %q", value)
+			}
+
+			next.Type = value
+		case "label":
+			next.Label = value
+		case "assignee":
+			next.Assignee = value
+		case "limit":
+			if value == "" {
+				next.Limit = 0
+				continue
+			}
+
+			limit, err := strconv.Atoi(value)
+			if err != nil || limit < 0 {
+				return store.ListFilter{}, fmt.Errorf("invalid limit %q", value)
+			}
+
+			next.Limit = limit
+		default:
+			return store.ListFilter{}, fmt.Errorf("unknown filter key %q", key)
+		}
+	}
+
+	return next, nil
 }
 
 func formatFilter(filter store.ListFilter) string {
@@ -705,19 +934,6 @@ func formatLabels(labels []string) string {
 	}
 
 	return strings.Join(labels, ", ")
-}
-
-func formatLinkIDs[T any](links []T, id func(T) string) string {
-	if len(links) == 0 {
-		return "(none)"
-	}
-
-	out := make([]string, 0, len(links))
-	for _, link := range links {
-		out = append(out, id(link))
-	}
-
-	return strings.Join(out, ", ")
 }
 
 func blankIfEmpty(value string) string {
@@ -760,8 +976,12 @@ func paneStyle(width, height int, focused bool) lipgloss.Style {
 	return style.BorderForeground(lipgloss.Color("8"))
 }
 
-func closeStore(s *store.Store) {
-	err := s.Close()
+func closeReader(reader summaryReader) {
+	if reader == nil {
+		return
+	}
+
+	err := reader.Close()
 	if err != nil {
 		return
 	}
@@ -794,6 +1014,9 @@ var (
 			BorderStyle(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("8")).
 			Padding(0, 1)
-	activeTabStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-	inactiveTabStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	filterStyle         = lipgloss.NewStyle().BorderStyle(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("6")).Padding(0, 1)
+	compactWarningStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11"))
+	compactSectionStyle = lipgloss.NewStyle().Bold(true)
+	activeTabStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
+	inactiveTabStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 )
