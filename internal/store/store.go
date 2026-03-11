@@ -81,6 +81,14 @@ type ListFilter struct {
 	Limit    int
 }
 
+func validateReadyFilter(filter ListFilter) error {
+	if filter.Assignee != "" {
+		return errors.New("ready queries do not support assignee filters")
+	}
+
+	return nil
+}
+
 func Open(path string) (*Store, error) {
 	err := os.MkdirAll(filepath.Dir(path), 0o755)
 	if err != nil {
@@ -410,6 +418,10 @@ func (s *Store) ListIssueSummaries(ctx context.Context, filter ListFilter) ([]is
 }
 
 func (s *Store) ReadyIssues(ctx context.Context, filter ListFilter) ([]issues.Issue, error) {
+	if err := validateReadyFilter(filter); err != nil {
+		return nil, err
+	}
+
 	query := `
 		SELECT i.id, i.sequence, i.title, i.description, i.type, i.status, i.priority, COALESCE(i.assignee, ''),
 		       i.created_at, i.updated_at, i.closed_at, COALESCE(i.parent_id, ''), i.deferred_until, i.estimate_minutes
@@ -437,12 +449,6 @@ func (s *Store) ReadyIssues(ctx context.Context, filter ListFilter) ([]issues.Is
 		time.Now().UTC().Format(time.RFC3339Nano),
 		issues.StatusClosed,
 		issues.StatusClosed,
-	}
-
-	if filter.Assignee != "" {
-		query += " AND COALESCE(i.assignee, '') = ?"
-
-		args = append(args, filter.Assignee)
 	}
 
 	if filter.Type != "" {
@@ -474,6 +480,10 @@ func (s *Store) ReadyIssues(ctx context.Context, filter ListFilter) ([]issues.Is
 }
 
 func (s *Store) ReadyIssueSummaries(ctx context.Context, filter ListFilter) ([]issues.IssueSummary, error) {
+	if err := validateReadyFilter(filter); err != nil {
+		return nil, err
+	}
+
 	query := `
 		SELECT i.id, i.title, i.status, i.type, i.priority, COALESCE(i.assignee, ''), COALESCE(i.parent_id, '')
 		FROM issues i
@@ -500,12 +510,6 @@ func (s *Store) ReadyIssueSummaries(ctx context.Context, filter ListFilter) ([]i
 		time.Now().UTC().Format(time.RFC3339Nano),
 		issues.StatusClosed,
 		issues.StatusClosed,
-	}
-
-	if filter.Assignee != "" {
-		query += " AND COALESCE(i.assignee, '') = ?"
-
-		args = append(args, filter.Assignee)
 	}
 
 	if filter.Type != "" {

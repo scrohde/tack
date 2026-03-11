@@ -184,6 +184,12 @@ func TestHelpCommandMatchesFlagHelp(t *testing.T) {
 			want:    "usage: tack import --file <path> [--json]",
 		},
 		{
+			name:    "show",
+			direct:  []string{"show", "--help"},
+			viaHelp: []string{"help", "show"},
+			want:    "usage: tack show <id> [--json]",
+		},
+		{
 			name:    "ready",
 			direct:  []string{"ready", "--help"},
 			viaHelp: []string{"help", "ready"},
@@ -492,6 +498,16 @@ func TestSummaryRequiresJSON(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "--summary requires --json") {
 			t.Fatalf("expected summary/json validation for %v, got %v", args, err)
 		}
+	}
+}
+
+func TestReadyRejectsAssigneeFilter(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+
+	err := runCLIError(t, repo, "ready", "--assignee", "alice")
+	if err == nil || !strings.Contains(err.Error(), "flag provided but not defined: -assignee") {
+		t.Fatalf("expected ready assignee flag rejection, got %v", err)
 	}
 }
 

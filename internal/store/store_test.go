@@ -278,6 +278,32 @@ func TestReadySummariesExcludeParentsWithOpenChildren(t *testing.T) {
 	}
 }
 
+func TestReadyRejectsAssigneeFilters(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	_, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "issue",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.ReadyIssues(ctx, store.ListFilter{Assignee: "alice"})
+	if err == nil || !strings.Contains(err.Error(), "do not support assignee filters") {
+		t.Fatalf("expected ready issue assignee filter rejection, got %v", err)
+	}
+
+	_, err = s.ReadyIssueSummaries(ctx, store.ListFilter{Assignee: "alice"})
+	if err == nil || !strings.Contains(err.Error(), "do not support assignee filters") {
+		t.Fatalf("expected ready summary assignee filter rejection, got %v", err)
+	}
+}
+
 func TestDependencyCycleRejected(t *testing.T) {
 	ctx := testutil.Context(t)
 	repo := testutil.TempRepo(t)

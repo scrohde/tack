@@ -27,7 +27,7 @@ type App struct {
 const (
 	usageSkillInstall = "usage: tack skill install [--home|--path <dir>] [--json]"
 	usageImport       = "usage: tack import --file <path> [--json]"
-	usageShow         = "usage: tack show <id>"
+	usageShow         = "usage: tack show <id> [--json]"
 	usageUpdate       = "usage: tack update <id> [flags]"
 	usageEdit         = "usage: tack edit <id>"
 	usageComment      = "usage: tack comment add|list"
@@ -412,7 +412,7 @@ func (a *App) runShow(ctx context.Context, args []string) error {
 }
 
 func (a *App) runList(ctx context.Context, args []string) error {
-	filter, jsonOut, summaryOut, err := parseListFilter("list", a.stdout, args)
+	filter, jsonOut, summaryOut, err := parseListFilter("list", a.stdout, args, true)
 	if err != nil {
 		return err
 	}
@@ -445,7 +445,7 @@ func (a *App) runList(ctx context.Context, args []string) error {
 }
 
 func (a *App) runReady(ctx context.Context, args []string) error {
-	filter, jsonOut, summaryOut, err := parseListFilter("ready", a.stdout, args)
+	filter, jsonOut, summaryOut, err := parseListFilter("ready", a.stdout, args, false)
 	if err != nil {
 		return err
 	}
@@ -1240,16 +1240,21 @@ func (a *App) runExport(ctx context.Context, args []string) error {
 	return writeJSON(a.stdout, data)
 }
 
-func parseListFilter(name string, helpOutput io.Writer, args []string) (store.ListFilter, bool, bool, error) {
+func parseListFilter(name string, helpOutput io.Writer, args []string, allowAssignee bool) (store.ListFilter, bool, bool, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	status := fs.String("status", "", "status filter")
-	assignee := fs.String("assignee", "", "assignee filter")
 	label := fs.String("label", "", "label filter")
 	kind := fs.String("type", "", "type filter")
 	limit := fs.Int("limit", 0, "max results")
+	assigneeValue := ""
 
 	jsonOut := fs.Bool("json", false, "output JSON")
 	summaryOut := fs.Bool("summary", false, "output compact JSON summaries")
+
+	var assignee *string
+	if allowAssignee {
+		assignee = fs.String("assignee", "", "assignee filter")
+	}
 
 	err := parseFlagSet(fs, helpOutput, args, fmt.Sprintf("usage: tack %s [flags]", name))
 	if err != nil {
@@ -1264,9 +1269,13 @@ func parseListFilter(name string, helpOutput io.Writer, args []string) (store.Li
 		return store.ListFilter{}, false, false, errors.New("--summary requires --json")
 	}
 
+	if assignee != nil {
+		assigneeValue = strings.TrimSpace(*assignee)
+	}
+
 	return store.ListFilter{
 		Status:   strings.TrimSpace(*status),
-		Assignee: strings.TrimSpace(*assignee),
+		Assignee: assigneeValue,
 		Label:    strings.TrimSpace(*label),
 		Type:     strings.TrimSpace(*kind),
 		Limit:    *limit,
@@ -1390,7 +1399,7 @@ func (a *App) printUsage() error {
   tack init
   tack create
   tack import --file <path> [--json]
-  tack show <id>
+  tack show <id> [--json]
   tack list
   tack ready
   tack update <id>
