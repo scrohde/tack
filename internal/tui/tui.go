@@ -77,6 +77,9 @@ type model struct {
 	focusedGraphView issues.FocusedGraphView
 	projectGraphView issues.ProjectGraphView
 
+	focusedGraphViewport graphViewport
+	projectGraphViewport graphViewport
+
 	width  int
 	height int
 
@@ -161,6 +164,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *model) handleKey(key string) tea.Cmd {
 	if m.filterInputActive {
 		return m.handleFilterInputKey(key)
+	}
+
+	if m.handleGraphViewportKey(key) {
+		return nil
 	}
 
 	switch key {
@@ -266,7 +273,7 @@ func (m *model) renderCompactLayout() string {
 		m.renderBrowserBody(),
 		"",
 		compactSectionStyle.Render(detailTabNames[m.activeTab]),
-		m.renderActiveTabBody(),
+		m.renderActiveTabBody(maxInt(24, m.width-2), maxInt(6, m.height/2)),
 	}
 
 	return strings.Join(sections, "\n")
@@ -304,7 +311,7 @@ func (m *model) renderHeader() string {
 }
 
 func (m *model) renderFooter() string {
-	return "q quit  / filters  tab/shift+tab switch  j/k move  enter pin  esc back  ? help  r toggle source  ctrl+r refresh  g/G graph tabs"
+	return "q quit  / filters  tab/shift+tab switch  j/k move  enter pin  esc back  ? help  r toggle source  ctrl+r refresh  g/G graph tabs  graph panes: h/j/k/l or arrows pan"
 }
 
 func (m *model) renderExpandedHelp() string {
@@ -317,6 +324,7 @@ func (m *model) renderExpandedHelp() string {
 		"esc returns focus to the browser and clears the current pin",
 		"r toggles between all issues and ready issues, ctrl+r refreshes from disk",
 		"g opens Focused Graph, G opens Project Graph",
+		"In graph tabs with detail focus, h/j/k/l and arrow keys pan the viewport",
 	}, "\n")
 }
 
@@ -343,7 +351,7 @@ func (m *model) renderDetailPane(width, height int) string {
 	body := strings.Join([]string{
 		lipgloss.JoinHorizontal(lipgloss.Top, tabParts...),
 		"",
-		m.renderActiveTabBody(),
+		m.renderActiveTabBody(maxInt(16, width-4), maxInt(4, height-6)),
 	}, "\n")
 
 	title := "Details"
@@ -354,14 +362,14 @@ func (m *model) renderDetailPane(width, height int) string {
 	return paneStyle(width, height, m.focus == paneDetail).Render(title + "\n\n" + body)
 }
 
-func (m *model) renderActiveTabBody() string {
+func (m *model) renderActiveTabBody(width, height int) string {
 	switch m.activeTab {
 	case tabComments:
 		return m.renderCommentsTab()
 	case tabFocusedGraph:
-		return m.renderFocusedGraphTab()
+		return m.renderFocusedGraphTab(width, height)
 	case tabProjectGraph:
-		return m.renderProjectGraphTab()
+		return m.renderProjectGraphTab(width, height)
 	default:
 		return m.renderDetailsTab()
 	}
@@ -418,66 +426,24 @@ func (m *model) renderCommentsTab() string {
 	return strings.Join(lines, "\n")
 }
 
-func (m *model) renderFocusedGraphTab() string {
+func (m *model) renderFocusedGraphTab(width, height int) string {
 	if m.currentDetailID() == "" {
 		return "Select an issue to inspect."
 	}
 
-	lines := []string{
-		"Parent",
-		m.renderFocusedSummary(m.focusedGraphView.ParentID),
-		"",
-		"Selected",
-		m.renderFocusedSummary(m.focusedGraphView.SelectedID),
-		"",
-		"Blocked By",
-		renderFocusedGroup(m.focusedGraphView.BlockedByIDs, m.focusedGraphView.NodeSummaries),
-		"",
-		"Blocks",
-		renderFocusedGroup(m.focusedGraphView.BlocksIDs, m.focusedGraphView.NodeSummaries),
-		"",
-		"Children",
-		renderFocusedGroup(m.focusedGraphView.ChildIDs, m.focusedGraphView.NodeSummaries),
-	}
+	content := renderFocusedGraph(m.focusedGraphView)
 
-	return strings.Join(lines, "\n")
+	return m.renderGraphViewport(width, height, &m.focusedGraphViewport, content)
 }
 
-func (m *model) renderFocusedSummary(id string) string {
-	if id == "" {
-		return "(none)"
-	}
-
-	summary, ok := m.focusedGraphView.NodeSummaries[id]
-	if !ok {
-		return id
-	}
-
-	return summaryLine(summary)
-}
-
-func (m *model) renderProjectGraphTab() string {
+func (m *model) renderProjectGraphTab(width, height int) string {
 	if len(m.projectGraphView.Issues) == 0 {
 		return "No project graph data."
 	}
 
-	lines := []string{"Issues"}
+	content := renderProjectGraph(m.projectGraphView, m.currentDetailID())
 
-	for _, summary := range m.projectGraphView.Issues {
-		prefix := " "
-		if summary.ID == m.currentDetailID() {
-			prefix = "*"
-		}
-
-		lines = append(lines, prefix+" "+summaryLine(summary))
-	}
-
-	lines = append(lines, "", "Links")
-	for _, link := range m.projectGraphView.Links {
-		lines = append(lines, fmt.Sprintf("%s %s -> %s", link.Kind, link.SourceID, link.TargetID))
-	}
-
-	return strings.Join(lines, "\n")
+	return m.renderGraphViewport(width, height, &m.projectGraphViewport, content)
 }
 
 func (m *model) advanceFocusOrTab() {
@@ -573,6 +539,7 @@ func (m *model) reload() error {
 		m.pinnedID = ""
 		m.detailView = issues.IssueDetailView{}
 		m.focusedGraphView = issues.FocusedGraphView{}
+		m.resetGraphViewport(tabFocusedGraph)
 	} else {
 		if m.selected >= len(m.summaries) {
 			m.selected = len(m.summaries) - 1
@@ -595,6 +562,7 @@ func (m *model) reload() error {
 	}
 
 	m.projectGraphView = project
+	m.resetGraphViewport(tabProjectGraph)
 	m.lastError = nil
 
 	return nil
@@ -614,6 +582,8 @@ func (m *model) syncDetailViews() {
 	if id == "" {
 		m.detailView = issues.IssueDetailView{}
 		m.focusedGraphView = issues.FocusedGraphView{}
+		m.resetGraphViewport(tabFocusedGraph)
+		m.resetGraphViewport(tabProjectGraph)
 
 		return
 	}
@@ -632,6 +602,8 @@ func (m *model) syncDetailViews() {
 
 	m.detailView = detailView
 	m.focusedGraphView = focusedGraphView
+	m.resetGraphViewport(tabFocusedGraph)
+	m.resetGraphViewport(tabProjectGraph)
 	m.lastError = nil
 }
 
@@ -815,25 +787,6 @@ func (m *model) reopenReader() error {
 
 func (m *model) closeReader() {
 	closeReader(m.reader)
-}
-
-func renderFocusedGroup(ids []string, summaries map[string]issues.IssueSummary) string {
-	if len(ids) == 0 {
-		return "(none)"
-	}
-
-	lines := make([]string, 0, len(ids))
-	for _, id := range ids {
-		summary, ok := summaries[id]
-		if !ok {
-			lines = append(lines, id)
-			continue
-		}
-
-		lines = append(lines, summaryLine(summary))
-	}
-
-	return strings.Join(lines, "\n")
 }
 
 func summaryLine(summary issues.IssueSummary) string {

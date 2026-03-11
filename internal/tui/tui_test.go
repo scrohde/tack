@@ -326,6 +326,147 @@ func TestEmptyAndCompactStatesRenderIntentionally(t *testing.T) {
 	}
 }
 
+func TestFocusedGraphTabRendersStructuredLayoutAndPansViewport(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		allSummaries: []issues.IssueSummary{
+			{ID: "tk-2", Title: "Selected issue with a long title", Status: issues.StatusOpen, Type: issues.TypeTask},
+		},
+		details: map[string]issues.IssueDetailView{
+			"tk-2": {Issue: issues.Issue{ID: "tk-2", Title: "Selected issue with a long title", Status: issues.StatusOpen}},
+		},
+		focused: map[string]issues.FocusedGraphView{
+			"tk-2": {
+				SelectedID:   "tk-2",
+				ParentID:     "tk-1",
+				BlockedByIDs: []string{"tk-3"},
+				BlocksIDs:    []string{"tk-4"},
+				ChildIDs:     []string{"tk-5"},
+				NodeSummaries: map[string]issues.IssueSummary{
+					"tk-1": {ID: "tk-1", Title: "Parent epic", Status: issues.StatusClosed, Type: issues.TypeEpic},
+					"tk-2": {ID: "tk-2", Title: "Selected issue with a long title", Status: issues.StatusOpen, Type: issues.TypeTask},
+					"tk-3": {ID: "tk-3", Title: "Blocking bug", Status: issues.StatusBlocked, Type: issues.TypeBug},
+					"tk-4": {ID: "tk-4", Title: "Downstream feature", Status: issues.StatusOpen, Type: issues.TypeFeature},
+					"tk-5": {ID: "tk-5", Title: "Child task", Status: issues.StatusOpen, Type: issues.TypeTask},
+				},
+			},
+		},
+		project: issues.ProjectGraphView{
+			Issues: []issues.IssueSummary{{ID: "tk-2", Title: "Selected issue with a long title", Status: issues.StatusOpen}},
+		},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.focus = paneDetail
+	m.activeTab = tabFocusedGraph
+
+	rendered := m.renderFocusedGraphTab(72, 18)
+	if !strings.Contains(rendered, "Legend:") || !strings.Contains(rendered, "Parent") || !strings.Contains(rendered, "Selected") {
+		t.Fatalf("expected focused graph scaffolding, got:\n%s", rendered)
+	}
+
+	if !strings.Contains(rendered, "┌") || !strings.Contains(rendered, "▶") || !strings.Contains(rendered, "▼") || !strings.Contains(rendered, "┈") {
+		t.Fatalf("expected box-drawing layout with closed styling, got:\n%s", rendered)
+	}
+
+	narrow := m.renderFocusedGraphTab(24, 10)
+	selectedBefore := m.selected
+	m.handleKey("l")
+	m.handleKey("j")
+
+	if m.selected != selectedBefore {
+		t.Fatalf("graph viewport pan should not move the browser selection: before=%d after=%d", selectedBefore, m.selected)
+	}
+
+	if m.focusedGraphViewport.x == 0 || m.focusedGraphViewport.y == 0 {
+		t.Fatalf("expected viewport offsets to move after panning, got %#v", m.focusedGraphViewport)
+	}
+
+	panned := m.renderFocusedGraphTab(24, 10)
+	if narrow == panned {
+		t.Fatalf("expected viewport render to change after panning:\n%s", panned)
+	}
+}
+
+func TestProjectGraphTabUsesDepthColumnsWhenCentered(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		allSummaries: []issues.IssueSummary{
+			{ID: "tk-2", Title: "Focus task", Status: issues.StatusOpen, Type: issues.TypeTask},
+		},
+		details: map[string]issues.IssueDetailView{
+			"tk-2": {Issue: issues.Issue{ID: "tk-2", Title: "Focus task", Status: issues.StatusOpen}},
+		},
+		focused: map[string]issues.FocusedGraphView{
+			"tk-2": {SelectedID: "tk-2", NodeSummaries: map[string]issues.IssueSummary{"tk-2": {ID: "tk-2", Title: "Focus task", Status: issues.StatusOpen, Type: issues.TypeTask}}},
+		},
+		project: issues.ProjectGraphView{
+			Issues: []issues.IssueSummary{
+				{ID: "tk-1", Title: "Upstream blocker", Status: issues.StatusOpen, Type: issues.TypeBug},
+				{ID: "tk-2", Title: "Focus task", Status: issues.StatusOpen, Type: issues.TypeTask},
+				{ID: "tk-3", Title: "Downstream child", Status: issues.StatusOpen, Type: issues.TypeTask},
+				{ID: "tk-4", Title: "Detached issue", Status: issues.StatusClosed, Type: issues.TypeTask},
+			},
+			Links: []issues.Link{
+				{Kind: "blocks", SourceID: "tk-1", TargetID: "tk-2"},
+				{Kind: "parent_child", SourceID: "tk-2", TargetID: "tk-3"},
+			},
+		},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.focus = paneDetail
+	m.activeTab = tabProjectGraph
+
+	rendered := m.renderProjectGraphTab(120, 18)
+	if !strings.Contains(rendered, "Depth -1") || !strings.Contains(rendered, "Focus") || !strings.Contains(rendered, "Depth +1") || !strings.Contains(rendered, "Detached") {
+		t.Fatalf("expected depth-grouped project graph, got:\n%s", rendered)
+	}
+
+	if !strings.Contains(rendered, "tk-1") || !strings.Contains(rendered, "tk-2") || !strings.Contains(rendered, "tk-3") || !strings.Contains(rendered, "tk-4") {
+		t.Fatalf("expected all project graph nodes to render, got:\n%s", rendered)
+	}
+}
+
+func TestProjectGraphTabFallsBackToClusterLayoutWithoutSelection(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		project: issues.ProjectGraphView{
+			Issues: []issues.IssueSummary{
+				{ID: "tk-1", Title: "Root epic", Status: issues.StatusOpen, Type: issues.TypeEpic},
+				{ID: "tk-2", Title: "Active task", Status: issues.StatusInProgress, Type: issues.TypeTask, ParentID: "tk-1"},
+				{ID: "tk-3", Title: "Ready task", Status: issues.StatusOpen, Type: issues.TypeTask, ParentID: "tk-1"},
+				{ID: "tk-4", Title: "Blocked task", Status: issues.StatusBlocked, Type: issues.TypeTask, ParentID: "tk-1"},
+				{ID: "tk-5", Title: "Closed task", Status: issues.StatusClosed, Type: issues.TypeTask, ParentID: "tk-1"},
+			},
+		},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.focus = paneDetail
+	m.activeTab = tabProjectGraph
+
+	rendered := m.renderProjectGraphTab(160, 18)
+	if !strings.Contains(rendered, "Roots") || !strings.Contains(rendered, "In Progress") || !strings.Contains(rendered, "Ready") || !strings.Contains(rendered, "Blocked") || !strings.Contains(rendered, "Closed") {
+		t.Fatalf("expected clustered fallback columns, got:\n%s", rendered)
+	}
+}
+
 func TestCtrlRRefreshReopensStoreAndReloadsFromDisk(t *testing.T) {
 	ctx := testutil.Context(t)
 	repo := testutil.TempRepo(t)
