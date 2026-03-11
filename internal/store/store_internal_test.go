@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -148,6 +149,92 @@ func TestConcurrentOpenersWaitForLockAndReadSuccessfully(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("timed out waiting for concurrent readers")
 		}
+	}
+}
+
+func TestOpenSupportsLegacyIssueColumns(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), ".tack", "issues.db")
+
+	err := os.MkdirAll(filepath.Dir(path), 0o755)
+	if err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	legacyDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open legacyDB: %v", err)
+	}
+
+	t.Cleanup(func() {
+		err := legacyDB.Close()
+		if err != nil {
+			t.Fatalf("Close legacyDB: %v", err)
+		}
+	})
+
+	_, err = legacyDB.ExecContext(ctx, `
+		CREATE TABLE issues (
+			id TEXT PRIMARY KEY,
+			sequence INTEGER NOT NULL UNIQUE,
+			title TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			type TEXT NOT NULL,
+			status TEXT NOT NULL,
+			priority TEXT NOT NULL,
+			assignee TEXT,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			closed_at TEXT,
+			parent_id TEXT,
+			deferred_until TEXT,
+			estimate_minutes INTEGER
+		)
+	`)
+	if err != nil {
+		t.Fatalf("create legacy issues table: %v", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	_, err = legacyDB.ExecContext(ctx, `
+		INSERT INTO issues (
+			id, sequence, title, description, type, status, priority, assignee,
+			created_at, updated_at, closed_at, parent_id, deferred_until, estimate_minutes
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+	`, "tk-1", 1, "legacy", "body", issues.TypeTask, issues.StatusOpen, "medium", "", now, now, now, 15)
+	if err != nil {
+		t.Fatalf("insert legacy issue: %v", err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	t.Cleanup(func() {
+		err := s.Close()
+		if err != nil {
+			t.Fatalf("Close store: %v", err)
+		}
+	})
+
+	issue, err := s.GetIssue(ctx, "tk-1")
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+
+	if issue.ID != "tk-1" || issue.Title != "legacy" {
+		t.Fatalf("unexpected legacy issue: %#v", issue)
+	}
+
+	ready, err := s.ReadyIssues(ctx, ListFilter{})
+	if err != nil {
+		t.Fatalf("ReadyIssues: %v", err)
+	}
+
+	if len(ready) != 1 || ready[0].ID != "tk-1" {
+		t.Fatalf("unexpected ready issues from legacy schema: %#v", ready)
 	}
 }
 

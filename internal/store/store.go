@@ -27,15 +27,13 @@ type Store struct {
 }
 
 type CreateIssueInput struct {
-	DeferredUntil   *time.Time
-	EstimateMinutes *int
-	Title           string
-	Description     string
-	Type            string
-	Priority        string
-	ParentID        string
-	DependsOn       []string
-	Labels          []string
+	Title       string
+	Description string
+	Type        string
+	Priority    string
+	ParentID    string
+	DependsOn   []string
+	Labels      []string
 }
 
 type ImportManifest struct {
@@ -59,18 +57,14 @@ type ImportResult struct {
 }
 
 type UpdateIssueInput struct {
-	Title              *string
-	Description        *string
-	Type               *string
-	Status             *string
-	Priority           *string
-	Assignee           *string
-	ParentID           *string
-	DeferredUntil      *time.Time
-	EstimateMinutes    *int
-	HasDeferredUntil   bool
-	HasEstimateMinutes bool
-	Claim              bool
+	Title       *string
+	Description *string
+	Type        *string
+	Status      *string
+	Priority    *string
+	Assignee    *string
+	ParentID    *string
+	Claim       bool
 }
 
 type ListFilter struct {
@@ -136,8 +130,6 @@ func (s *Store) migrate(ctx context.Context) error {
 			updated_at TEXT NOT NULL,
 			closed_at TEXT,
 			parent_id TEXT,
-			deferred_until TEXT,
-			estimate_minutes INTEGER,
 			FOREIGN KEY(parent_id) REFERENCES issues(id) ON DELETE SET NULL
 		);`,
 		`CREATE TABLE IF NOT EXISTS issue_links (
@@ -242,11 +234,10 @@ func (s *Store) CreateIssue(ctx context.Context, input CreateIssueInput, actor s
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO issues (
 			id, sequence, title, description, type, status, priority, assignee,
-			created_at, updated_at, closed_at, parent_id, deferred_until, estimate_minutes
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+			created_at, updated_at, closed_at, parent_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
 	`, id, sequence, input.Title, input.Description, input.Type, issues.StatusOpen, input.Priority, "",
-		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), nullableString(input.ParentID),
-		nullableTime(input.DeferredUntil), nullableInt(input.EstimateMinutes))
+		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), nullableString(input.ParentID))
 	if err != nil {
 		return issues.Issue{}, err
 	}
@@ -291,7 +282,7 @@ func (s *Store) CreateIssue(ctx context.Context, input CreateIssueInput, actor s
 func (s *Store) GetIssue(ctx context.Context, id string) (issues.Issue, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, sequence, title, description, type, status, priority, COALESCE(assignee, ''),
-		       created_at, updated_at, closed_at, COALESCE(parent_id, ''), deferred_until, estimate_minutes
+		       created_at, updated_at, closed_at, COALESCE(parent_id, '')
 		FROM issues WHERE id = ?
 	`, strings.TrimSpace(id))
 
@@ -317,7 +308,7 @@ func (s *Store) GetIssue(ctx context.Context, id string) (issues.Issue, error) {
 func (s *Store) ListIssues(ctx context.Context, filter ListFilter) ([]issues.Issue, error) {
 	query := `
 		SELECT i.id, i.sequence, i.title, i.description, i.type, i.status, i.priority, COALESCE(i.assignee, ''),
-		       i.created_at, i.updated_at, i.closed_at, COALESCE(i.parent_id, ''), i.deferred_until, i.estimate_minutes
+		       i.created_at, i.updated_at, i.closed_at, COALESCE(i.parent_id, '')
 		FROM issues i
 	`
 
@@ -425,11 +416,10 @@ func (s *Store) ReadyIssues(ctx context.Context, filter ListFilter) ([]issues.Is
 
 	query := `
 		SELECT i.id, i.sequence, i.title, i.description, i.type, i.status, i.priority, COALESCE(i.assignee, ''),
-		       i.created_at, i.updated_at, i.closed_at, COALESCE(i.parent_id, ''), i.deferred_until, i.estimate_minutes
+		       i.created_at, i.updated_at, i.closed_at, COALESCE(i.parent_id, '')
 		FROM issues i
 		WHERE i.status = ?
 		  AND COALESCE(i.assignee, '') = ''
-		  AND (i.deferred_until IS NULL OR i.deferred_until <= ?)
 		  AND NOT EXISTS (
 			SELECT 1
 			FROM issue_links l
@@ -447,7 +437,6 @@ func (s *Store) ReadyIssues(ctx context.Context, filter ListFilter) ([]issues.Is
 	`
 	args := []any{
 		issues.StatusOpen,
-		time.Now().UTC().Format(time.RFC3339Nano),
 		issues.StatusClosed,
 		issues.StatusClosed,
 	}
@@ -491,7 +480,6 @@ func (s *Store) ReadyIssueSummaries(ctx context.Context, filter ListFilter) ([]i
 		FROM issues i
 		WHERE i.status = ?
 		  AND COALESCE(i.assignee, '') = ''
-		  AND (i.deferred_until IS NULL OR i.deferred_until <= ?)
 		  AND NOT EXISTS (
 			SELECT 1
 			FROM issue_links l
@@ -509,7 +497,6 @@ func (s *Store) ReadyIssueSummaries(ctx context.Context, filter ListFilter) ([]i
 	`
 	args := []any{
 		issues.StatusOpen,
-		time.Now().UTC().Format(time.RFC3339Nano),
 		issues.StatusClosed,
 		issues.StatusClosed,
 	}
@@ -635,16 +622,6 @@ func (s *Store) UpdateIssue(ctx context.Context, id string, input UpdateIssueInp
 		changed["parent_id"] = parentID
 	}
 
-	if input.HasDeferredUntil {
-		current.DeferredUntil = input.DeferredUntil
-		changed["deferred_until"] = input.DeferredUntil
-	}
-
-	if input.HasEstimateMinutes {
-		current.EstimateMinutes = input.EstimateMinutes
-		changed["estimate_minutes"] = input.EstimateMinutes
-	}
-
 	if input.Claim {
 		if strings.TrimSpace(actor) == "" {
 			return issues.Issue{}, errors.New("claim requires an actor")
@@ -677,11 +654,11 @@ func (s *Store) UpdateIssue(ctx context.Context, id string, input UpdateIssueInp
 	_, err = tx.ExecContext(ctx, `
 		UPDATE issues
 		SET title = ?, description = ?, type = ?, status = ?, priority = ?, assignee = ?,
-		    updated_at = ?, closed_at = ?, parent_id = ?, deferred_until = ?, estimate_minutes = ?
+		    updated_at = ?, closed_at = ?, parent_id = ?
 		WHERE id = ?
 	`, current.Title, current.Description, current.Type, current.Status, current.Priority,
 		nullableString(current.Assignee), now.Format(time.RFC3339Nano), nullableTime(current.ClosedAt),
-		nullableString(current.ParentID), nullableTime(current.DeferredUntil), nullableInt(current.EstimateMinutes), id)
+		nullableString(current.ParentID), id)
 	if err != nil {
 		return issues.Issue{}, err
 	}
@@ -1191,8 +1168,8 @@ func (s *Store) ImportIssues(ctx context.Context, manifest ImportManifest, actor
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO issues (
 				id, sequence, title, description, type, status, priority, assignee,
-				created_at, updated_at, closed_at, parent_id, deferred_until, estimate_minutes
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)
+				created_at, updated_at, closed_at, parent_id
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
 		`, id, sequence, entry.Title, entry.Description, entry.Type, issues.StatusOpen, entry.Priority, "",
 			now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 		if err != nil {
@@ -1532,7 +1509,7 @@ func nextSequence(ctx context.Context, tx *sql.Tx) (int64, error) {
 func getIssueTx(ctx context.Context, tx *sql.Tx, id string) (issues.Issue, error) {
 	row := tx.QueryRowContext(ctx, `
 		SELECT id, sequence, title, description, type, status, priority, COALESCE(assignee, ''),
-		       created_at, updated_at, closed_at, COALESCE(parent_id, ''), deferred_until, estimate_minutes
+		       created_at, updated_at, closed_at, COALESCE(parent_id, '')
 		FROM issues WHERE id = ?
 	`, id)
 
@@ -1557,13 +1534,11 @@ func scanIssue(row scannable) (issues.Issue, error) {
 		issue            issues.Issue
 		created, updated string
 		closed           sql.NullString
-		deferred         sql.NullString
-		estimate         sql.NullInt64
 	)
 
 	err := row.Scan(
 		&issue.ID, &issue.Sequence, &issue.Title, &issue.Description, &issue.Type, &issue.Status,
-		&issue.Priority, &issue.Assignee, &created, &updated, &closed, &issue.ParentID, &deferred, &estimate,
+		&issue.Priority, &issue.Assignee, &created, &updated, &closed, &issue.ParentID,
 	)
 	if err != nil {
 		return issues.Issue{}, err
@@ -1586,20 +1561,6 @@ func scanIssue(row scannable) (issues.Issue, error) {
 		}
 
 		issue.ClosedAt = &t
-	}
-
-	if deferred.Valid {
-		t, err := time.Parse(time.RFC3339Nano, deferred.String)
-		if err != nil {
-			return issues.Issue{}, err
-		}
-
-		issue.DeferredUntil = &t
-	}
-
-	if estimate.Valid {
-		v := int(estimate.Int64)
-		issue.EstimateMinutes = &v
 	}
 
 	return issue, nil
@@ -1850,14 +1811,6 @@ func nullableTime(t *time.Time) any {
 	}
 
 	return t.UTC().Format(time.RFC3339Nano)
-}
-
-func nullableInt(v *int) any {
-	if v == nil {
-		return nil
-	}
-
-	return *v
 }
 
 func closeDB(db *sql.DB) {

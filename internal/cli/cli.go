@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -153,8 +152,6 @@ func (a *App) runCreate(ctx context.Context, args []string) error {
 	description := fs.String("description", "", "description text")
 	bodyFile := fs.String("body-file", "", "path to description body")
 	parent := fs.String("parent", "", "parent issue id")
-	deferredUntil := fs.String("deferred-until", "", "RFC3339 deferred until time")
-	estimateMinutes := fs.String("estimate-minutes", "", "estimate in minutes")
 	jsonOut := fs.Bool("json", false, "output JSON")
 	actorFlag := fs.String("actor", "", "actor override")
 
@@ -206,24 +203,6 @@ func (a *App) runCreate(ctx context.Context, args []string) error {
 		ParentID:    *parent,
 		DependsOn:   dependsOn.values,
 		Labels:      labels.values,
-	}
-
-	if *deferredUntil != "" {
-		t, err := time.Parse(time.RFC3339, *deferredUntil)
-		if err != nil {
-			return fmt.Errorf("invalid --deferred-until: %w", err)
-		}
-
-		input.DeferredUntil = &t
-	}
-
-	if *estimateMinutes != "" {
-		n, err := strconv.Atoi(*estimateMinutes)
-		if err != nil {
-			return fmt.Errorf("invalid --estimate-minutes: %w", err)
-		}
-
-		input.EstimateMinutes = &n
 	}
 
 	issue, err := s.CreateIssue(ctx, input, actor)
@@ -496,8 +475,6 @@ func (a *App) runUpdate(ctx context.Context, args []string) error {
 	priority := &optionalString{}
 	assignee := &optionalString{}
 	parent := &optionalString{}
-	deferredUntil := &optionalString{}
-	estimateMinutes := &optionalString{}
 	claim := fs.Bool("claim", false, "claim issue for current actor")
 	jsonOut := fs.Bool("json", false, "output JSON")
 	actorFlag := fs.String("actor", "", "actor override")
@@ -508,8 +485,6 @@ func (a *App) runUpdate(ctx context.Context, args []string) error {
 	fs.Var(priority, "priority", "new priority")
 	fs.Var(assignee, "assignee", "new assignee; empty clears")
 	fs.Var(parent, "parent", "new parent; empty clears")
-	fs.Var(deferredUntil, "deferred-until", "RFC3339 time; empty clears")
-	fs.Var(estimateMinutes, "estimate-minutes", "minutes; empty clears")
 
 	err := a.parseFlags(fs, args[1:], usageUpdate)
 	if err != nil {
@@ -560,34 +535,8 @@ func (a *App) runUpdate(ctx context.Context, args []string) error {
 		input.ParentID = &parent.value
 	}
 
-	if deferredUntil.set {
-		input.HasDeferredUntil = true
-
-		if strings.TrimSpace(deferredUntil.value) != "" {
-			t, err := time.Parse(time.RFC3339, deferredUntil.value)
-			if err != nil {
-				return fmt.Errorf("invalid --deferred-until: %w", err)
-			}
-
-			input.DeferredUntil = &t
-		}
-	}
-
-	if estimateMinutes.set {
-		input.HasEstimateMinutes = true
-
-		if strings.TrimSpace(estimateMinutes.value) != "" {
-			n, err := strconv.Atoi(estimateMinutes.value)
-			if err != nil {
-				return fmt.Errorf("invalid --estimate-minutes: %w", err)
-			}
-
-			input.EstimateMinutes = &n
-		}
-	}
-
 	actor := ""
-	if *claim || title.set || description.set || kind.set || status.set || priority.set || assignee.set || parent.set || deferredUntil.set || estimateMinutes.set {
+	if *claim || title.set || description.set || kind.set || status.set || priority.set || assignee.set || parent.set {
 		actor, err = issues.ResolveActor(repoRoot, *actorFlag)
 		if err != nil {
 			return err
@@ -657,17 +606,13 @@ func (a *App) runEdit(ctx context.Context, args []string) error {
 	}
 
 	input := store.UpdateIssueInput{
-		Title:              &parsed.Title,
-		Description:        &parsed.Description,
-		Type:               &parsed.Type,
-		Status:             &parsed.Status,
-		Priority:           &parsed.Priority,
-		Assignee:           &parsed.Assignee,
-		ParentID:           &parsed.ParentID,
-		HasDeferredUntil:   true,
-		DeferredUntil:      parsed.DeferredUntil,
-		HasEstimateMinutes: true,
-		EstimateMinutes:    parsed.EstimateMinutes,
+		Title:       &parsed.Title,
+		Description: &parsed.Description,
+		Type:        &parsed.Type,
+		Status:      &parsed.Status,
+		Priority:    &parsed.Priority,
+		Assignee:    &parsed.Assignee,
+		ParentID:    &parsed.ParentID,
 	}
 
 	_, err = s.UpdateIssue(ctx, id, input, actor)

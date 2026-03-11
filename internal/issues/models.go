@@ -36,21 +36,19 @@ var (
 )
 
 type Issue struct {
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
-	EstimateMinutes *int       `json:"estimate_minutes"`
-	DeferredUntil   *time.Time `json:"deferred_until"`
-	ClosedAt        *time.Time `json:"closed_at"`
-	Description     string     `json:"description"`
-	Priority        string     `json:"priority"`
-	Assignee        string     `json:"assignee"`
-	Status          string     `json:"status"`
-	Type            string     `json:"type"`
-	ID              string     `json:"id"`
-	ParentID        string     `json:"parent_id"`
-	Title           string     `json:"title"`
-	Labels          []string   `json:"labels"`
-	Sequence        int64      `json:"sequence"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	ClosedAt    *time.Time `json:"closed_at"`
+	Description string     `json:"description"`
+	Priority    string     `json:"priority"`
+	Assignee    string     `json:"assignee"`
+	Status      string     `json:"status"`
+	Type        string     `json:"type"`
+	ID          string     `json:"id"`
+	ParentID    string     `json:"parent_id"`
+	Title       string     `json:"title"`
+	Labels      []string   `json:"labels"`
+	Sequence    int64      `json:"sequence"`
 }
 
 type IssueSummary struct {

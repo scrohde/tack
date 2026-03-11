@@ -3,7 +3,6 @@ package store_test
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"tack/internal/issues"
 	"tack/internal/store"
@@ -83,19 +82,6 @@ func TestReadyFilteringAndCloseUnblocks(t *testing.T) {
 		Type:        issues.TypeTask,
 		Priority:    "medium",
 		DependsOn:   []string{blocker.ID},
-	}, "alice")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	future := time.Now().UTC().Add(24 * time.Hour)
-
-	_, err = s.CreateIssue(ctx, store.CreateIssueInput{
-		Title:         "deferred",
-		Description:   "body",
-		Type:          issues.TypeTask,
-		Priority:      "medium",
-		DeferredUntil: &future,
 	}, "alice")
 	if err != nil {
 		t.Fatal(err)

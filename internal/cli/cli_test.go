@@ -511,6 +511,37 @@ func TestReadyRejectsAssigneeFilter(t *testing.T) {
 	}
 }
 
+func TestIssueJSONOmitsRemovedFields(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+	t.Setenv("TACK_ACTOR", "alice")
+
+	runCLI(t, repo, "init")
+
+	created := createIssue(t, repo, []string{
+		"create",
+		"--title", "issue",
+		"--type", "task",
+		"--priority", "medium",
+		"--description", "body",
+		"--json",
+	})
+
+	for _, key := range []string{"estimate_minutes", "deferred_until"} {
+		if _, ok := created[key]; ok {
+			t.Fatalf("unexpected retired key %q in create payload: %#v", key, created)
+		}
+	}
+
+	shown := runJSON[map[string]any](t, repo, "show", stringField(t, created, "id"), "--json")
+
+	for _, key := range []string{"estimate_minutes", "deferred_until"} {
+		if _, ok := shown[key]; ok {
+			t.Fatalf("unexpected retired key %q in show payload: %#v", key, shown)
+		}
+	}
+}
+
 func TestImportJSON(t *testing.T) {
 	repo := testutil.TempRepo(t)
 	testutil.Chdir(t, repo)
