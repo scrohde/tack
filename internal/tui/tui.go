@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	"charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
 
 	tea "charm.land/bubbletea/v2"
@@ -83,7 +85,16 @@ type model struct {
 	width  int
 	height int
 
+	descriptionCache markdownRenderCache
+
 	lastError error
+}
+
+type markdownRenderCache struct {
+	issueID  string
+	width    int
+	source   string
+	rendered string
 }
 
 func Run(ctx context.Context, stdout, _ io.Writer, options StartupOptions) error {
@@ -270,7 +281,7 @@ func (m *model) renderCompactLayout() string {
 		compactWarningStyle.Render(fmt.Sprintf("Compact single-column layout (%dx%d). Full layout needs about 60x12.", m.width, m.height)),
 		"",
 		compactSectionStyle.Render("Issues"),
-		m.renderBrowserBody(),
+		m.renderBrowserBody(maxInt(24, m.width-2)),
 		"",
 		compactSectionStyle.Render(detailTabNames[m.activeTab]),
 		m.renderActiveTabBody(maxInt(24, m.width-2), maxInt(6, m.height/2)),
@@ -280,6 +291,11 @@ func (m *model) renderCompactLayout() string {
 }
 
 func (m *model) renderHeader() string {
+	repoName := filepath.Base(m.repoRoot)
+	if repoName == "." || repoName == string(filepath.Separator) || repoName == "" {
+		repoName = m.repoRoot
+	}
+
 	selectedID := "-"
 	if summary := m.selectedSummary(); summary != nil {
 		selectedID = summary.ID
@@ -290,13 +306,23 @@ func (m *model) renderHeader() string {
 		detailID = "-"
 	}
 
-	parts := []string{
-		fmt.Sprintf("repo %s", m.repoRoot),
-		fmt.Sprintf("source %s", m.source),
-		fmt.Sprintf("filters %s", formatFilter(m.filter)),
-		fmt.Sprintf("results %d", len(m.summaries)),
-		fmt.Sprintf("selected %s", selectedID),
-		fmt.Sprintf("detail %s", detailID),
+	parts := []string{fmt.Sprintf("repo %s", repoName), fmt.Sprintf("view %s", m.source)}
+
+	filterSummary := formatFilter(m.filter)
+	if filterSummary == "(none)" {
+		parts = append(parts, "filters none")
+	} else {
+		parts = append(parts, "filter "+filterSummary)
+	}
+
+	parts = append(parts, fmt.Sprintf("%d issues", len(m.summaries)))
+
+	if selectedID != "-" {
+		parts = append(parts, "selected "+selectedID)
+	}
+
+	if detailID != "-" {
+		parts = append(parts, "detail "+detailID)
 	}
 
 	if m.pinnedID != "" {
@@ -311,7 +337,7 @@ func (m *model) renderHeader() string {
 }
 
 func (m *model) renderFooter() string {
-	return "q quit  / filters  tab/shift+tab switch  j/k move  enter pin  esc back  ? help  r toggle source  ctrl+r refresh  g/G graph tabs  graph panes: h/j/k/l or arrows pan"
+	return "q quit  tab switch  j/k move  enter pin  / filter  g/G graphs  ? more"
 }
 
 func (m *model) renderExpandedHelp() string {
@@ -329,12 +355,12 @@ func (m *model) renderExpandedHelp() string {
 }
 
 func (m *model) renderBrowserPane(width, height int) string {
-	title := "Issue Browser"
+	title := fmt.Sprintf("Issue Browser (%d)", len(m.summaries))
 	if m.focus == paneBrowser {
 		title += " [active]"
 	}
 
-	return paneStyle(width, height, m.focus == paneBrowser).Render(title + "\n\n" + m.renderBrowserBody())
+	return paneStyle(width, height, m.focus == paneBrowser).Render(paneTitleStyle.Render(title) + "\n\n" + m.renderBrowserBody(maxInt(20, width-4)))
 }
 
 func (m *model) renderDetailPane(width, height int) string {
@@ -349,17 +375,21 @@ func (m *model) renderDetailPane(width, height int) string {
 	}
 
 	body := strings.Join([]string{
-		lipgloss.JoinHorizontal(lipgloss.Top, tabParts...),
+		lipgloss.JoinHorizontal(lipgloss.Bottom, tabParts...),
 		"",
 		m.renderActiveTabBody(maxInt(16, width-4), maxInt(4, height-6)),
 	}, "\n")
 
 	title := "Details"
+	if detailID := m.currentDetailID(); detailID != "" {
+		title += " " + detailID
+	}
+
 	if m.focus == paneDetail {
 		title += " [active]"
 	}
 
-	return paneStyle(width, height, m.focus == paneDetail).Render(title + "\n\n" + body)
+	return paneStyle(width, height, m.focus == paneDetail).Render(paneTitleStyle.Render(title) + "\n\n" + body)
 }
 
 func (m *model) renderActiveTabBody(width, height int) string {
@@ -371,33 +401,37 @@ func (m *model) renderActiveTabBody(width, height int) string {
 	case tabProjectGraph:
 		return m.renderProjectGraphTab(width, height)
 	default:
-		return m.renderDetailsTab()
+		return m.renderDetailsTab(width)
 	}
 }
 
-func (m *model) renderDetailsTab() string {
+func (m *model) renderDetailsTab(width int) string {
 	if m.currentDetailID() == "" {
 		return m.renderEmptyDetailState()
 	}
 
 	issue := m.detailView.Issue
 	lines := []string{
-		fmt.Sprintf("%s  %s", issue.ID, issue.Title),
-		fmt.Sprintf("status=%s  type=%s  priority=%s  assignee=%s", issue.Status, issue.Type, issue.Priority, blankIfEmpty(issue.Assignee)),
-		fmt.Sprintf("labels=%s", formatLabels(issue.Labels)),
+		detailTitleStyle.Render(issue.Title),
+		metaLine("id", issue.ID),
+		metaLine("status", issue.Status),
+		metaLine("type", issue.Type),
+		metaLine("priority", blankIfEmpty(issue.Priority)),
+		metaLine("assignee", blankIfEmpty(issue.Assignee)),
+		metaLine("labels", formatLabels(issue.Labels)),
 		"",
-		"Parent",
-		m.renderRelatedSummary(issue.ParentID),
+		sectionTitleStyle.Render("Relationships"),
+		metaLine("parent", m.renderRelatedSummary(issue.ParentID)),
 		"",
-		"Blocked By",
+		sectionTitleStyle.Render("Blocked By"),
 		m.renderRelatedLinks(m.detailView.Dependencies.BlockedBy, func(link issues.Link) string { return link.SourceID }),
 		"",
-		"Blocks",
+		sectionTitleStyle.Render("Blocks"),
 		m.renderRelatedLinks(m.detailView.Dependencies.Blocks, func(link issues.Link) string { return link.TargetID }),
 	}
 
 	if strings.TrimSpace(issue.Description) != "" {
-		lines = append(lines, "", "Description", issue.Description)
+		lines = append(lines, "", sectionTitleStyle.Render("Description"), m.renderMarkdown(issue.ID, width, issue.Description))
 	}
 
 	return strings.Join(lines, "\n")
@@ -409,17 +443,20 @@ func (m *model) renderCommentsTab() string {
 	}
 
 	lines := []string{
-		fmt.Sprintf("%s  %d comment(s)", m.detailView.Issue.ID, len(m.detailView.Comments)),
+		detailTitleStyle.Render(m.detailView.Issue.Title),
+		metaLine("issue", m.detailView.Issue.ID),
+		metaLine("comments", fmt.Sprintf("%d comment(s)", len(m.detailView.Comments))),
 	}
 
 	if len(m.detailView.Comments) == 0 {
-		lines = append(lines, "", "No comments yet.")
+		lines = append(lines, "", mutedTextStyle.Render("No comments yet."))
 		return strings.Join(lines, "\n")
 	}
 
 	for _, comment := range m.detailView.Comments {
 		lines = append(lines, "")
-		lines = append(lines, fmt.Sprintf("%s  %s", comment.Author, comment.CreatedAt.Format("2006-01-02 15:04")))
+		lines = append(lines, sectionTitleStyle.Render(comment.Author))
+		lines = append(lines, mutedTextStyle.Render(comment.CreatedAt.Format("2006-01-02 15:04")))
 		lines = append(lines, comment.Body)
 	}
 
@@ -675,15 +712,16 @@ func (m *model) hasSummary(id string) bool {
 
 func (m *model) renderFilterEditor() string {
 	lines := []string{
-		fmt.Sprintf("Filter editor  current: %s", formatFilter(m.filter)),
-		"Apply changes with key=value tokens (status, type, label, assignee, limit) or use reset.",
+		sectionTitleStyle.Render("Filter Editor"),
+		"Current: " + formatFilter(m.filter),
+		"Use key=value tokens (status, type, label, assignee, limit) or reset.",
 		"> " + m.filterInput,
 	}
 
 	return strings.Join(lines, "\n")
 }
 
-func (m *model) renderBrowserBody() string {
+func (m *model) renderBrowserBody(width int) string {
 	if m.isEmptyRepo() {
 		return strings.Join([]string{
 			"No issues yet.",
@@ -700,19 +738,24 @@ func (m *model) renderBrowserBody() string {
 		}, "\n")
 	}
 
-	rows := make([]string, 0, len(m.summaries))
+	indicatorWidth := 2
+	idWidth := 6
+	statusWidth := 11
+	typeWidth := 8
+	titleWidth := maxInt(12, width-(indicatorWidth+idWidth+statusWidth+typeWidth+4))
+
+	rows := make([]string, 0, len(m.summaries)+1)
+	rows = append(rows, tableHeaderStyle.Render(fmt.Sprintf("%-*s %-*s %-*s %-*s %s", indicatorWidth, "", idWidth, "ID", statusWidth, "STATUS", typeWidth, "TYPE", "TITLE")))
+
 	for i, summary := range m.summaries {
-		marker := " "
+		marker := "  "
 		if i == m.selected {
-			marker = ">"
+			marker = "> "
+		} else if summary.ID == m.currentDetailID() {
+			marker = "* "
 		}
 
-		pin := " "
-		if summary.ID == m.currentDetailID() {
-			pin = "*"
-		}
-
-		line := fmt.Sprintf("%s%s %-6s %-11s %-8s %s", marker, pin, summary.ID, summary.Status, summary.Type, summary.Title)
+		line := fmt.Sprintf("%-*s %-*s %-*s %-*s %s", indicatorWidth, marker, idWidth, summary.ID, statusWidth, summary.Status, typeWidth, summary.Type, truncateText(summary.Title, titleWidth))
 		rows = append(rows, styleIssueLine(summary, i == m.selected, summary.ID == m.currentDetailID()).Render(line))
 	}
 
@@ -791,6 +834,51 @@ func (m *model) closeReader() {
 
 func summaryLine(summary issues.IssueSummary) string {
 	return fmt.Sprintf("%s  [%s] %s", summary.ID, summary.Status, summary.Title)
+}
+
+func (m *model) renderMarkdown(issueID string, width int, source string) string {
+	width = maxInt(20, width)
+
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return ""
+	}
+
+	if m.descriptionCache.issueID == issueID && m.descriptionCache.width == width && m.descriptionCache.source == source {
+		return m.descriptionCache.rendered
+	}
+
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithStandardStyle("dark"),
+		glamour.WithWordWrap(width),
+		glamour.WithPreservedNewLines(),
+	)
+	if err != nil {
+		return source
+	}
+
+	rendered, err := renderer.Render(source)
+	if err != nil {
+		return source
+	}
+
+	rendered = strings.TrimRight(rendered, "\n")
+	if strings.TrimSpace(rendered) == "" {
+		return source
+	}
+
+	m.descriptionCache = markdownRenderCache{
+		issueID:  issueID,
+		width:    width,
+		source:   source,
+		rendered: rendered,
+	}
+
+	return rendered
+}
+
+func metaLine(label, value string) string {
+	return fmt.Sprintf("%-9s %s", label, value)
 }
 
 func parseFilterInput(current store.ListFilter, input string) (store.ListFilter, error) {
@@ -898,18 +986,22 @@ func blankIfEmpty(value string) string {
 }
 
 func styleIssueLine(summary issues.IssueSummary, selected, pinned bool) lipgloss.Style {
-	style := lipgloss.NewStyle()
-
-	if summary.Status == issues.StatusClosed {
-		style = style.Foreground(lipgloss.Color("8"))
-	}
-
 	if selected {
-		style = style.Bold(true)
+		return lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("0")).
+			Background(lipgloss.Color("12"))
 	}
 
 	if pinned {
-		style = style.Foreground(lipgloss.Color("12"))
+		return lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("12"))
+	}
+
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
+	if summary.Status == issues.StatusClosed {
+		style = style.Foreground(lipgloss.Color("8"))
 	}
 
 	return style
@@ -926,7 +1018,7 @@ func paneStyle(width, height int, focused bool) lipgloss.Style {
 		return style.BorderForeground(lipgloss.Color("12"))
 	}
 
-	return style.BorderForeground(lipgloss.Color("8"))
+	return style.BorderForeground(lipgloss.Color("7"))
 }
 
 func closeReader(reader summaryReader) {
@@ -961,15 +1053,44 @@ func maxInt(a, b int) int {
 }
 
 var (
-	headerStyle = lipgloss.NewStyle().Bold(true).Padding(0, 1)
-	footerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("7")).Padding(0, 1)
-	helpStyle   = lipgloss.NewStyle().
+	headerStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("252")).
+			Background(lipgloss.Color("235")).
+			Padding(0, 1)
+	footerStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("245")).
+			Background(lipgloss.Color("235")).
+			Padding(0, 1)
+	helpStyle = lipgloss.NewStyle().
 			BorderStyle(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("8")).
 			Padding(0, 1)
 	filterStyle         = lipgloss.NewStyle().BorderStyle(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("6")).Padding(0, 1)
 	compactWarningStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11"))
 	compactSectionStyle = lipgloss.NewStyle().Bold(true)
-	activeTabStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-	inactiveTabStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	activeTabStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("12")).Padding(0, 1).MarginRight(1)
+	inactiveTabStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Background(lipgloss.Color("237")).Padding(0, 1).MarginRight(1)
+	paneTitleStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
+	tableHeaderStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Bold(true)
+	detailTitleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
+	sectionTitleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
+	mutedTextStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 )
+
+func truncateText(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+
+	runes := []rune(text)
+	if len(runes) <= width {
+		return text
+	}
+
+	if width == 1 {
+		return "…"
+	}
+
+	return string(runes[:width-1]) + "…"
+}

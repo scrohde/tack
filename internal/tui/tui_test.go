@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -10,6 +11,8 @@ import (
 	"tack/internal/store"
 	"tack/internal/testutil"
 )
+
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func TestNewModelLoadsSummariesFromStartupSource(t *testing.T) {
 	t.Parallel()
@@ -217,7 +220,7 @@ func TestFilterEditorUpdatesFilterAndSummaries(t *testing.T) {
 	}
 
 	header := m.renderHeader()
-	if !strings.Contains(header, "filters status=blocked") || !strings.Contains(header, "results 1") {
+	if !strings.Contains(header, "filter status=blocked") || !strings.Contains(header, "1 issues") {
 		t.Fatalf("unexpected header after filter update: %s", header)
 	}
 }
@@ -238,7 +241,7 @@ func TestDetailsAndCommentsTabsRenderTypedDetailContext(t *testing.T) {
 					Type:        issues.TypeTask,
 					Priority:    "medium",
 					ParentID:    "tk-1",
-					Description: "detail body",
+					Description: "# Context\n\n- detail body\n- next step",
 				},
 				Comments: []issues.Comment{
 					{Author: "alice", Body: "needs follow-up"},
@@ -268,9 +271,14 @@ func TestDetailsAndCommentsTabsRenderTypedDetailContext(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	details := m.renderDetailsTab()
+	details := m.renderDetailsTab(72)
 	if !strings.Contains(details, "tk-1  [open] parent") || !strings.Contains(details, "tk-3  [blocked] blocker") || !strings.Contains(details, "tk-4  [open] downstream") {
 		t.Fatalf("details tab did not render related context:\n%s", details)
+	}
+
+	plainDetails := ansiPattern.ReplaceAllString(details, "")
+	if !strings.Contains(plainDetails, "Context") || !strings.Contains(plainDetails, "detail body") || strings.Contains(plainDetails, "# Context") {
+		t.Fatalf("details tab did not render markdown description cleanly:\n%s", plainDetails)
 	}
 
 	comments := m.renderCommentsTab()
@@ -291,7 +299,7 @@ func TestEmptyAndCompactStatesRenderIntentionally(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	browser := emptyModel.renderBrowserBody()
+	browser := emptyModel.renderBrowserBody(80)
 	if !strings.Contains(browser, "No issues yet.") || !strings.Contains(browser, "tack create") || !strings.Contains(browser, "tack import") {
 		t.Fatalf("unexpected empty repo browser state:\n%s", browser)
 	}
@@ -312,7 +320,7 @@ func TestEmptyAndCompactStatesRenderIntentionally(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	filteredBrowser := filteredModel.renderBrowserBody()
+	filteredBrowser := filteredModel.renderBrowserBody(80)
 	if !strings.Contains(filteredBrowser, "No matching issues.") || !strings.Contains(filteredBrowser, "status=blocked") {
 		t.Fatalf("unexpected filtered empty state:\n%s", filteredBrowser)
 	}
