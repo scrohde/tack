@@ -287,6 +287,85 @@ func TestDetailsAndCommentsTabsRenderTypedDetailContext(t *testing.T) {
 	}
 }
 
+func TestDetailPaneScrollsLongDescriptionsWhenFocused(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		allSummaries: []issues.IssueSummary{
+			{ID: "tk-1", Title: "first", Status: issues.StatusOpen, Type: issues.TypeTask},
+			{ID: "tk-2", Title: "second", Status: issues.StatusOpen, Type: issues.TypeTask},
+		},
+		details: map[string]issues.IssueDetailView{
+			"tk-1": {
+				Issue: issues.Issue{
+					ID:          "tk-1",
+					Title:       "first",
+					Status:      issues.StatusOpen,
+					Type:        issues.TypeTask,
+					Description: "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9",
+				},
+			},
+			"tk-2": {
+				Issue: issues.Issue{
+					ID:          "tk-2",
+					Title:       "second",
+					Status:      issues.StatusOpen,
+					Type:        issues.TypeTask,
+					Description: "other issue",
+				},
+			},
+		},
+		focused: map[string]issues.FocusedGraphView{
+			"tk-1": {SelectedID: "tk-1", NodeSummaries: map[string]issues.IssueSummary{"tk-1": {ID: "tk-1", Title: "first", Status: issues.StatusOpen}}},
+			"tk-2": {SelectedID: "tk-2", NodeSummaries: map[string]issues.IssueSummary{"tk-2": {ID: "tk-2", Title: "second", Status: issues.StatusOpen}}},
+		},
+		project: issues.ProjectGraphView{
+			Issues: []issues.IssueSummary{
+				{ID: "tk-1", Title: "first", Status: issues.StatusOpen},
+				{ID: "tk-2", Title: "second", Status: issues.StatusOpen},
+			},
+		},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.focus = paneDetail
+	m.activeTab = tabDetails
+
+	initial := ansiPattern.ReplaceAllString(m.renderActiveTabBody(60, 8), "")
+	selectedBefore := m.selected
+
+	m.handleKey("j")
+	m.handleKey("j")
+
+	if m.selected != selectedBefore {
+		t.Fatalf("detail viewport scroll should not move browser selection: before=%d after=%d", selectedBefore, m.selected)
+	}
+
+	if m.detailsViewport.y == 0 {
+		t.Fatalf("expected detail viewport to scroll, got %#v", m.detailsViewport)
+	}
+
+	scrolled := ansiPattern.ReplaceAllString(m.renderActiveTabBody(60, 8), "")
+	if initial == scrolled {
+		t.Fatalf("expected detail viewport render to change after scrolling:\n%s", scrolled)
+	}
+
+	m.focus = paneBrowser
+	m.handleKey("j")
+
+	if m.selected != 1 {
+		t.Fatalf("expected browser selection to move once focus returned, got %d", m.selected)
+	}
+
+	if m.detailsViewport.y != 0 {
+		t.Fatalf("expected detail viewport reset after selection changed, got %#v", m.detailsViewport)
+	}
+}
+
 func TestEmptyAndCompactStatesRenderIntentionally(t *testing.T) {
 	t.Parallel()
 

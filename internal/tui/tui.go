@@ -79,6 +79,8 @@ type model struct {
 	focusedGraphView issues.FocusedGraphView
 	projectGraphView issues.ProjectGraphView
 
+	detailsViewport      textViewport
+	commentsViewport     textViewport
 	focusedGraphViewport graphViewport
 	projectGraphViewport graphViewport
 
@@ -95,6 +97,10 @@ type markdownRenderCache struct {
 	width    int
 	source   string
 	rendered string
+}
+
+type textViewport struct {
+	y int
 }
 
 func Run(ctx context.Context, stdout, _ io.Writer, options StartupOptions) error {
@@ -175,6 +181,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *model) handleKey(key string) tea.Cmd {
 	if m.filterInputActive {
 		return m.handleFilterInputKey(key)
+	}
+
+	if m.handleTextViewportKey(key) {
+		return nil
 	}
 
 	if m.handleGraphViewportKey(key) {
@@ -337,7 +347,7 @@ func (m *model) renderHeader() string {
 }
 
 func (m *model) renderFooter() string {
-	return "q quit  tab switch  j/k move  enter pin  / filter  g/G graphs  ? more"
+	return "q quit  tab switch  j/k move or scroll  enter pin  / filter  g/G graphs  ? more"
 }
 
 func (m *model) renderExpandedHelp() string {
@@ -350,6 +360,7 @@ func (m *model) renderExpandedHelp() string {
 		"esc returns focus to the browser and clears the current pin",
 		"r toggles between all issues and ready issues, ctrl+r refreshes from disk",
 		"g opens Focused Graph, G opens Project Graph",
+		"In Details and Comments with detail focus, j/k, arrows, pgup/pgdown, and ctrl+u/ctrl+d scroll",
 		"In graph tabs with detail focus, h/j/k/l and arrow keys pan the viewport",
 	}, "\n")
 }
@@ -395,13 +406,13 @@ func (m *model) renderDetailPane(width, height int) string {
 func (m *model) renderActiveTabBody(width, height int) string {
 	switch m.activeTab {
 	case tabComments:
-		return m.renderCommentsTab()
+		return m.renderTextViewport(&m.commentsViewport, height, m.renderCommentsTab())
 	case tabFocusedGraph:
 		return m.renderFocusedGraphTab(width, height)
 	case tabProjectGraph:
 		return m.renderProjectGraphTab(width, height)
 	default:
-		return m.renderDetailsTab(width)
+		return m.renderTextViewport(&m.detailsViewport, height, m.renderDetailsTab(width))
 	}
 }
 
@@ -576,6 +587,8 @@ func (m *model) reload() error {
 		m.pinnedID = ""
 		m.detailView = issues.IssueDetailView{}
 		m.focusedGraphView = issues.FocusedGraphView{}
+		m.resetTextViewport(tabDetails)
+		m.resetTextViewport(tabComments)
 		m.resetGraphViewport(tabFocusedGraph)
 	} else {
 		if m.selected >= len(m.summaries) {
@@ -619,6 +632,8 @@ func (m *model) syncDetailViews() {
 	if id == "" {
 		m.detailView = issues.IssueDetailView{}
 		m.focusedGraphView = issues.FocusedGraphView{}
+		m.resetTextViewport(tabDetails)
+		m.resetTextViewport(tabComments)
 		m.resetGraphViewport(tabFocusedGraph)
 		m.resetGraphViewport(tabProjectGraph)
 
@@ -639,6 +654,8 @@ func (m *model) syncDetailViews() {
 
 	m.detailView = detailView
 	m.focusedGraphView = focusedGraphView
+	m.resetTextViewport(tabDetails)
+	m.resetTextViewport(tabComments)
 	m.resetGraphViewport(tabFocusedGraph)
 	m.resetGraphViewport(tabProjectGraph)
 	m.lastError = nil
@@ -875,6 +892,77 @@ func (m *model) renderMarkdown(issueID string, width int, source string) string 
 	}
 
 	return rendered
+}
+
+func (m *model) handleTextViewportKey(key string) bool {
+	if m.focus != paneDetail {
+		return false
+	}
+
+	viewport := m.activeTextViewport()
+	if viewport == nil {
+		return false
+	}
+
+	switch key {
+	case "up", "k":
+		viewport.y = maxInt(0, viewport.y-1)
+		return true
+	case "down", "j":
+		viewport.y++
+		return true
+	case "pgup", "ctrl+u":
+		viewport.y = maxInt(0, viewport.y-8)
+		return true
+	case "pgdown", "ctrl+d":
+		viewport.y += 8
+		return true
+	case "home":
+		viewport.y = 0
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *model) activeTextViewport() *textViewport {
+	switch m.activeTab {
+	case tabDetails:
+		return &m.detailsViewport
+	case tabComments:
+		return &m.commentsViewport
+	default:
+		return nil
+	}
+}
+
+func (m *model) resetTextViewport(tab detailTab) {
+	switch tab {
+	case tabDetails:
+		m.detailsViewport = textViewport{}
+	case tabComments:
+		m.commentsViewport = textViewport{}
+	}
+}
+
+func (m *model) renderTextViewport(viewport *textViewport, height int, content string) string {
+	if viewport == nil {
+		return content
+	}
+
+	lines := strings.Split(content, "\n")
+	if len(lines) == 0 {
+		lines = []string{""}
+	}
+
+	visibleHeight := maxInt(1, height)
+	maxY := maxInt(0, len(lines)-visibleHeight)
+	viewport.y = clampInt(viewport.y, 0, maxY)
+
+	endY := clampInt(viewport.y+visibleHeight, viewport.y, len(lines))
+	visible := lines[viewport.y:endY]
+
+	return strings.Join(visible, "\n")
 }
 
 func metaLine(label, value string) string {

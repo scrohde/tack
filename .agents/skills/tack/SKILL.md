@@ -25,6 +25,7 @@ Use this skill when you need to work against the local `tack` database inside a 
 - Prefer `--json` for read and mutation commands when another tool will consume the output.
 - Prefer `tack ready --json --summary` and `tack list --json --summary` for automation. Summary output omits large bodies and includes the fields agents usually need to decide what to do next: `id`, `title`, `status`, `type`, `priority`, `assignee`, `parent_id`, `labels`, `blocked_by`, and `open_children`.
 - Parent issues are non-actionable by default while they still have open children. They stay visible in `tack list`, `tack show`, and `tack export --json`, but they do not appear in `tack ready` until all children are closed.
+- Write issue `description` fields as Markdown when the body is more than a sentence or two. Prefer short sections, bullets, and code fences over dense prose so the CLI/TUI can render the description cleanly.
 - Use `tack import --file <path>` when converting a dev plan or checklist into issues. Import manifests support per-issue alias `id`, `title`, `description`, `type`, `priority`, `labels`, `parent`, and `depends_on`, so you can create the graph in one pass.
 - Minimal import manifest example:
   ```json
