@@ -155,6 +155,20 @@ func TestSkillInstallRejectsConflictingTargets(t *testing.T) {
 	}
 }
 
+func TestTopLevelHelpIncludesTUI(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+
+	out, err := runCLIBytes(repo, "--help")
+	if err != nil {
+		t.Fatalf("help failed: %v", err)
+	}
+
+	if !strings.Contains(string(out), "tack tui") {
+		t.Fatalf("expected top-level help to include tack tui, got %q", string(out))
+	}
+}
+
 func TestHelpCommandMatchesFlagHelp(t *testing.T) {
 	repo := testutil.TempRepo(t)
 	testutil.Chdir(t, repo)
@@ -188,6 +202,12 @@ func TestHelpCommandMatchesFlagHelp(t *testing.T) {
 			direct:  []string{"show", "--help"},
 			viaHelp: []string{"help", "show"},
 			want:    "usage: tack show <id> [--json]",
+		},
+		{
+			name:    "tui",
+			direct:  []string{"tui", "--help"},
+			viaHelp: []string{"help", "tui"},
+			want:    "usage: tack tui [--ready] [--status <status>] [--type <type>] [--label <label>] [--assignee <assignee>] [--limit <n>]",
 		},
 		{
 			name:    "ready",

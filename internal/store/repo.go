@@ -96,3 +96,22 @@ func EnsureInitialized(repoRoot string) error {
 
 	return nil
 }
+
+func OpenRepo(start string) (string, *Store, error) {
+	repoRoot, err := FindRepoRoot(start)
+	if err != nil {
+		return "", nil, err
+	}
+
+	err = EnsureInitialized(repoRoot)
+	if err != nil {
+		return "", nil, err
+	}
+
+	s, err := Open(dbPath(repoRoot))
+	if err != nil {
+		return "", nil, err
+	}
+
+	return repoRoot, s, nil
+}

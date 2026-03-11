@@ -105,6 +105,13 @@ type IssueDetail struct {
 	Events    []Event   `json:"events"`
 }
 
+type IssueDetailView struct {
+	Issue            Issue                   `json:"issue"`
+	Comments         []Comment               `json:"comments"`
+	Dependencies     DependencyList          `json:"dependencies"`
+	RelatedSummaries map[string]IssueSummary `json:"related_summaries"`
+}
+
 type Export struct {
 	Metadata  map[string]any   `json:"metadata"`
 	IssueData map[string][]any `json:"issue_data,omitempty"`

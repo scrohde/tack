@@ -264,6 +264,101 @@ func TestReadySummariesExcludeParentsWithOpenChildren(t *testing.T) {
 	}
 }
 
+func TestIssueDetailViewIncludesCommentsDependenciesAndRelatedSummaries(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	parent, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "parent",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+		Labels:      []string{"planning"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blocker, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "blocker",
+		Description: "body",
+		Type:        issues.TypeBug,
+		Priority:    "high",
+		Labels:      []string{"backend"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	target, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "target",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+		ParentID:    parent.ID,
+		DependsOn:   []string{blocker.ID},
+		Labels:      []string{"tui"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	downstream, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "downstream",
+		Description: "body",
+		Type:        issues.TypeFeature,
+		Priority:    "medium",
+		DependsOn:   []string{target.ID},
+		Labels:      []string{"frontend"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.AddComment(ctx, target.ID, "needs graph context", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := s.IssueDetailView(ctx, target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if view.Issue.ID != target.ID {
+		t.Fatalf("unexpected issue: %#v", view.Issue)
+	}
+
+	if len(view.Comments) != 1 || view.Comments[0].Body != "needs graph context" {
+		t.Fatalf("unexpected comments: %#v", view.Comments)
+	}
+
+	if len(view.Dependencies.BlockedBy) != 1 || view.Dependencies.BlockedBy[0].SourceID != blocker.ID {
+		t.Fatalf("unexpected blockers: %#v", view.Dependencies.BlockedBy)
+	}
+
+	if len(view.Dependencies.Blocks) != 1 || view.Dependencies.Blocks[0].TargetID != downstream.ID {
+		t.Fatalf("unexpected blocked issues: %#v", view.Dependencies.Blocks)
+	}
+
+	if len(view.RelatedSummaries) != 3 {
+		t.Fatalf("unexpected related summaries: %#v", view.RelatedSummaries)
+	}
+
+	if view.RelatedSummaries[parent.ID].Title != parent.Title {
+		t.Fatalf("missing parent summary: %#v", view.RelatedSummaries)
+	}
+
+	if labels := view.RelatedSummaries[blocker.ID].Labels; len(labels) != 1 || labels[0] != "backend" {
+		t.Fatalf("unexpected blocker summary labels: %#v", view.RelatedSummaries[blocker.ID])
+	}
+
+	if view.RelatedSummaries[downstream.ID].Title != downstream.Title {
+		t.Fatalf("missing downstream summary: %#v", view.RelatedSummaries)
+	}
+}
+
 func TestReadyRejectsAssigneeFilters(t *testing.T) {
 	ctx := testutil.Context(t)
 	repo := testutil.TempRepo(t)

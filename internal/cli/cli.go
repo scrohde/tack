@@ -16,6 +16,7 @@ import (
 	"tack/internal/issues"
 	"tack/internal/skill"
 	"tack/internal/store"
+	"tack/internal/tui"
 )
 
 type App struct {
@@ -27,6 +28,7 @@ const (
 	usageSkillInstall = "usage: tack skill install [--home|--path <dir>] [--json]"
 	usageImport       = "usage: tack import --file <path> [--json]"
 	usageShow         = "usage: tack show <id> [--json]"
+	usageTUI          = "usage: tack tui [--ready] [--status <status>] [--type <type>] [--label <label>] [--assignee <assignee>] [--limit <n>]"
 	usageUpdate       = "usage: tack update <id> [flags]"
 	usageEdit         = "usage: tack edit <id>"
 	usageComment      = "usage: tack comment add|list"
@@ -41,6 +43,8 @@ const (
 	usageLabelsRemove = "usage: tack labels remove <id> <label> [label...]"
 	usageLabelsList   = "usage: tack labels list <id>"
 )
+
+var launchTUI = tui.Run
 
 func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	app := &App{stdout: stdout, stderr: stderr}
@@ -76,6 +80,8 @@ func (a *App) execute(ctx context.Context, args []string) error {
 		return a.runImport(ctx, args[1:])
 	case "show":
 		return a.runShow(ctx, args[1:])
+	case "tui":
+		return a.runTUI(ctx, args[1:])
 	case "list":
 		return a.runList(ctx, args[1:])
 	case "ready":
@@ -388,6 +394,42 @@ func (a *App) runShow(ctx context.Context, args []string) error {
 	}
 
 	return printIssueDetail(a.stdout, issue)
+}
+
+func (a *App) runTUI(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("tui", flag.ContinueOnError)
+	ready := fs.Bool("ready", false, "start in ready view")
+	status := fs.String("status", "", "status filter")
+	kind := fs.String("type", "", "type filter")
+	label := fs.String("label", "", "label filter")
+	assignee := fs.String("assignee", "", "assignee filter")
+	limit := fs.Int("limit", 0, "limit results")
+
+	err := parseTUIFlagSet(fs, a.stdout, args)
+	if err != nil {
+		return err
+	}
+
+	if fs.NArg() != 0 {
+		return errors.New(usageTUI)
+	}
+
+	options := tui.StartupOptions{
+		Source: tui.DataSourceAll,
+		Filter: store.ListFilter{
+			Status:   strings.TrimSpace(*status),
+			Assignee: strings.TrimSpace(*assignee),
+			Label:    strings.TrimSpace(*label),
+			Type:     strings.TrimSpace(*kind),
+			Limit:    *limit,
+		},
+	}
+
+	if *ready {
+		options.Source = tui.DataSourceReady
+	}
+
+	return launchTUI(ctx, a.stdout, a.stderr, options)
 }
 
 func (a *App) runList(ctx context.Context, args []string) error {
@@ -1228,22 +1270,7 @@ func parseListFilter(name string, helpOutput io.Writer, args []string, allowAssi
 }
 
 func openRepoStore() (string, *store.Store, error) {
-	repoRoot, err := store.FindRepoRoot(".")
-	if err != nil {
-		return "", nil, err
-	}
-
-	err = store.EnsureInitialized(repoRoot)
-	if err != nil {
-		return "", nil, err
-	}
-
-	s, err := store.Open(filepath.Join(repoRoot, ".tack", "issues.db"))
-	if err != nil {
-		return "", nil, err
-	}
-
-	return repoRoot, s, nil
+	return store.OpenRepo(".")
 }
 
 func readLongField(inline, bodyFile, fallback string) (string, error) {
@@ -1394,6 +1421,7 @@ func (a *App) printUsage() error {
   tack create
   tack import --file <path> [--json]
   tack show <id> [--json]
+  tack tui
   tack list
   tack ready
   tack update <id>
@@ -1425,6 +1453,8 @@ func (a *App) runHelp(ctx context.Context, args []string) error {
 		return a.runImport(ctx, withHelp)
 	case "show":
 		return a.runShow(ctx, withHelp)
+	case "tui":
+		return a.runTUI(ctx, withHelp)
 	case "list":
 		return a.runList(ctx, withHelp)
 	case "ready":
@@ -1479,22 +1509,7 @@ func parseFlagSet(fs *flag.FlagSet, helpOutput io.Writer, args []string, usage s
 
 func printFlagUsage(w io.Writer, usage string, fs *flag.FlagSet) error {
 	return printUsageWithDefaults(w, usage, func(out io.Writer) error {
-		hasFlags := false
-
-		fs.VisitAll(func(*flag.Flag) {
-			hasFlags = true
-		})
-
-		if !hasFlags {
-			return nil
-		}
-
-		previousOutput := fs.Output()
-		fs.SetOutput(out)
-		fs.PrintDefaults()
-		fs.SetOutput(previousOutput)
-
-		return nil
+		return printFlagDefaults(out, fs)
 	})
 }
 
@@ -1518,6 +1533,69 @@ func printUsageWithDefaults(w io.Writer, usage string, defaults func(io.Writer) 
 	}
 
 	return defaults(w)
+}
+
+func parseTUIFlagSet(fs *flag.FlagSet, helpOutput io.Writer, args []string) error {
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {}
+
+	err := fs.Parse(args)
+	if err == nil {
+		return nil
+	}
+
+	if errors.Is(err, flag.ErrHelp) {
+		usageErr := printTUIUsage(helpOutput, fs)
+		if usageErr != nil {
+			return usageErr
+		}
+
+		return flag.ErrHelp
+	}
+
+	return err
+}
+
+func printTUIUsage(w io.Writer, fs *flag.FlagSet) error {
+	return printUsageWithDefaults(w, usageTUI, func(out io.Writer) error {
+		_, err := fmt.Fprintln(out, `keyboard controls:
+  q            quit
+  ?            toggle help
+  tab          switch panes or tabs
+  shift+tab    switch panes or tabs in reverse
+  j/k, arrows  move selection
+  /            open inline filter editor
+  r            toggle list and ready views
+  enter        pin or open the selected issue
+  g            open the focused graph tab
+  G            open the project graph tab
+  esc          clear filter input or return focus
+  ctrl+r       refresh data from disk`)
+		if err != nil {
+			return err
+		}
+
+		return printFlagDefaults(out, fs)
+	})
+}
+
+func printFlagDefaults(out io.Writer, fs *flag.FlagSet) error {
+	hasFlags := false
+
+	fs.VisitAll(func(*flag.Flag) {
+		hasFlags = true
+	})
+
+	if !hasFlags {
+		return nil
+	}
+
+	previousOutput := fs.Output()
+	fs.SetOutput(out)
+	fs.PrintDefaults()
+	fs.SetOutput(previousOutput)
+
+	return nil
 }
 
 func readImportManifest(path string) (_ store.ImportManifest, err error) {

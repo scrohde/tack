@@ -353,6 +353,59 @@ func (s *Store) GetIssueDetail(ctx context.Context, id string) (issues.IssueDeta
 	return detail, nil
 }
 
+func (s *Store) IssueDetailView(ctx context.Context, id string) (issues.IssueDetailView, error) {
+	issue, err := s.GetIssue(ctx, id)
+	if err != nil {
+		return issues.IssueDetailView{}, err
+	}
+
+	view := issues.IssueDetailView{
+		Issue:    issue,
+		Comments: []issues.Comment{},
+		Dependencies: issues.DependencyList{
+			IssueID:   issue.ID,
+			BlockedBy: []issues.Link{},
+			Blocks:    []issues.Link{},
+		},
+		RelatedSummaries: map[string]issues.IssueSummary{},
+	}
+
+	comments, err := s.listCommentsByIssueID(ctx, issue.ID)
+	if err != nil {
+		return issues.IssueDetailView{}, err
+	}
+
+	deps, err := s.listDependenciesByIssueID(ctx, issue.ID)
+	if err != nil {
+		return issues.IssueDetailView{}, err
+	}
+
+	if comments != nil {
+		view.Comments = comments
+	}
+
+	if deps.BlockedBy == nil {
+		deps.BlockedBy = []issues.Link{}
+	}
+
+	if deps.Blocks == nil {
+		deps.Blocks = []issues.Link{}
+	}
+
+	view.Dependencies = deps
+
+	related, err := s.listIssueSummariesByID(ctx, relatedIssueIDs(issue, deps))
+	if err != nil {
+		return issues.IssueDetailView{}, err
+	}
+
+	for _, summary := range related {
+		view.RelatedSummaries[summary.ID] = summary
+	}
+
+	return view, nil
+}
+
 func (s *Store) ListIssues(ctx context.Context, filter ListFilter) ([]issues.Issue, error) {
 	query := `
 		SELECT i.id, i.sequence, i.title, i.description, i.type, i.status, i.priority, COALESCE(i.assignee, ''),
@@ -949,6 +1002,27 @@ func (s *Store) listDependenciesByIssueID(ctx context.Context, id string) (issue
 	}
 
 	return issues.DependencyList{IssueID: id, BlockedBy: blockedBy, Blocks: blocks}, nil
+}
+
+func (s *Store) listIssueSummariesByID(ctx context.Context, ids []string) ([]issues.IssueSummary, error) {
+	if len(ids) == 0 {
+		return []issues.IssueSummary{}, nil
+	}
+
+	query, args := queryForIDs(`
+		SELECT i.id, i.title, i.status, i.type, i.priority, COALESCE(i.assignee, ''), COALESCE(i.parent_id, '')
+		FROM issues i
+		WHERE i.id IN (%s)
+		ORDER BY i.sequence ASC
+	`, ids)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer closeRows(rows)
+
+	return scanIssueSummaries(ctx, rows, s)
 }
 
 func (s *Store) listEventsByIssueID(ctx context.Context, id string) ([]issues.Event, error) {
@@ -1863,6 +1937,37 @@ func queryForIDs(query string, ids []string) (string, []any) {
 	}
 
 	return fmt.Sprintf(query, strings.Join(placeholders, ", ")), args
+}
+
+func relatedIssueIDs(issue issues.Issue, deps issues.DependencyList) []string {
+	seen := map[string]struct{}{}
+	ids := []string{}
+
+	appendID := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+
+		if _, ok := seen[id]; ok {
+			return
+		}
+
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+
+	appendID(issue.ParentID)
+
+	for _, link := range deps.BlockedBy {
+		appendID(link.SourceID)
+	}
+
+	for _, link := range deps.Blocks {
+		appendID(link.TargetID)
+	}
+
+	return ids
 }
 
 func nullableString(v string) any {
