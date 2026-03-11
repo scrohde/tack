@@ -1,6 +1,8 @@
 package store_test
 
 import (
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -356,6 +358,308 @@ func TestIssueDetailViewIncludesCommentsDependenciesAndRelatedSummaries(t *testi
 
 	if view.RelatedSummaries[downstream.ID].Title != downstream.Title {
 		t.Fatalf("missing downstream summary: %#v", view.RelatedSummaries)
+	}
+}
+
+func TestFocusedGraphViewIncludesDirectNeighborhoodOnly(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	grandparent, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "grandparent",
+		Description: "body",
+		Type:        issues.TypeEpic,
+		Priority:    "high",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	parent, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "parent",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+		ParentID:    grandparent.ID,
+		Labels:      []string{"planning"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blockerOpen, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "blocker-open",
+		Description: "body",
+		Type:        issues.TypeBug,
+		Priority:    "high",
+		Labels:      []string{"backend"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blockerClosed, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "blocker-closed",
+		Description: "body",
+		Type:        issues.TypeBug,
+		Priority:    "medium",
+		Labels:      []string{"ops"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	focus, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "focus",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+		ParentID:    parent.ID,
+		DependsOn:   []string{blockerOpen.ID, blockerClosed.ID},
+		Labels:      []string{"tui"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blockedOpen, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "blocked-open",
+		Description: "body",
+		Type:        issues.TypeFeature,
+		Priority:    "medium",
+		DependsOn:   []string{focus.ID},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blockedClosed, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "blocked-closed",
+		Description: "body",
+		Type:        issues.TypeFeature,
+		Priority:    "low",
+		DependsOn:   []string{focus.ID},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	childOpen, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "child-open",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+		ParentID:    focus.ID,
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	childClosed, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "child-closed",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+		ParentID:    focus.ID,
+		Labels:      []string{"docs"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "grandchild",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+		ParentID:    childOpen.ID,
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "unrelated",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.CloseIssue(ctx, blockerClosed.ID, "done", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.CloseIssue(ctx, blockedClosed.ID, "done", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.CloseIssue(ctx, childClosed.ID, "done", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := s.FocusedGraphView(ctx, focus.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if view.SelectedID != focus.ID {
+		t.Fatalf("unexpected selected id: %#v", view)
+	}
+
+	if view.ParentID != parent.ID {
+		t.Fatalf("unexpected parent id: %#v", view)
+	}
+
+	if !reflect.DeepEqual(view.BlockedByIDs, []string{blockerOpen.ID, blockerClosed.ID}) {
+		t.Fatalf("unexpected blockers: %#v", view.BlockedByIDs)
+	}
+
+	if !reflect.DeepEqual(view.BlocksIDs, []string{blockedOpen.ID, blockedClosed.ID}) {
+		t.Fatalf("unexpected blocked issues: %#v", view.BlocksIDs)
+	}
+
+	if !reflect.DeepEqual(view.ChildIDs, []string{childOpen.ID, childClosed.ID}) {
+		t.Fatalf("unexpected child ids: %#v", view.ChildIDs)
+	}
+
+	if len(view.NodeSummaries) != 8 {
+		t.Fatalf("unexpected node summaries: %#v", view.NodeSummaries)
+	}
+
+	if _, ok := view.NodeSummaries[grandparent.ID]; ok {
+		t.Fatalf("grandparent should not be included in focused graph: %#v", view.NodeSummaries)
+	}
+
+	if labels := view.NodeSummaries[blockerOpen.ID].Labels; len(labels) != 1 || labels[0] != "backend" {
+		t.Fatalf("unexpected blocker summary: %#v", view.NodeSummaries[blockerOpen.ID])
+	}
+
+	if view.NodeSummaries[focus.ID].Status != issues.StatusOpen {
+		t.Fatalf("unexpected focus status: %#v", view.NodeSummaries[focus.ID])
+	}
+
+	if view.NodeSummaries[blockerClosed.ID].Status != issues.StatusClosed {
+		t.Fatalf("expected closed blocker summary: %#v", view.NodeSummaries[blockerClosed.ID])
+	}
+
+	if view.NodeSummaries[blockedClosed.ID].Status != issues.StatusClosed {
+		t.Fatalf("expected closed blocked issue summary: %#v", view.NodeSummaries[blockedClosed.ID])
+	}
+
+	if view.NodeSummaries[childClosed.ID].Status != issues.StatusClosed {
+		t.Fatalf("expected closed child summary: %#v", view.NodeSummaries[childClosed.ID])
+	}
+}
+
+func TestProjectGraphViewIncludesAllIssueSummariesAndGraphLinks(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	parent, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "parent",
+		Description: "body",
+		Type:        issues.TypeEpic,
+		Priority:    "high",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	child, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "child",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+		ParentID:    parent.ID,
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blocker, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "blocker",
+		Description: "body",
+		Type:        issues.TypeBug,
+		Priority:    "high",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blocked, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "blocked",
+		Description: "body",
+		Type:        issues.TypeFeature,
+		Priority:    "medium",
+		DependsOn:   []string{child.ID},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	leaf, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "leaf",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "low",
+		DependsOn:   []string{blocker.ID},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.AddDependency(ctx, child.ID, blocker.ID, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.CloseIssue(ctx, blocker.ID, "done", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := s.ProjectGraphView(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(view.Issues) != 5 {
+		t.Fatalf("expected all issues in project graph, got %#v", view.Issues)
+	}
+
+	if len(view.Links) != 4 {
+		t.Fatalf("expected graph links, got %#v", view.Links)
+	}
+
+	if view.Issues[2].ID != blocker.ID || view.Issues[2].Status != issues.StatusClosed {
+		t.Fatalf("expected closed blocker summary in project graph: %#v", view.Issues)
+	}
+
+	gotLinks := []string{}
+	for _, link := range view.Links {
+		gotLinks = append(gotLinks, link.Kind+":"+link.SourceID+"->"+link.TargetID)
+	}
+
+	wantLinks := []string{
+		"blocks:" + blocker.ID + "->" + child.ID,
+		"blocks:" + blocker.ID + "->" + leaf.ID,
+		"blocks:" + child.ID + "->" + blocked.ID,
+		"parent_child:" + parent.ID + "->" + child.ID,
+	}
+
+	slices.Sort(gotLinks)
+	slices.Sort(wantLinks)
+
+	if !reflect.DeepEqual(gotLinks, wantLinks) {
+		t.Fatalf("unexpected project graph links: got %#v want %#v", gotLinks, wantLinks)
 	}
 }
 

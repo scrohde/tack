@@ -112,6 +112,20 @@ type IssueDetailView struct {
 	RelatedSummaries map[string]IssueSummary `json:"related_summaries"`
 }
 
+type FocusedGraphView struct {
+	NodeSummaries map[string]IssueSummary `json:"node_summaries"`
+	SelectedID    string                  `json:"selected_id"`
+	ParentID      string                  `json:"parent_id"`
+	BlockedByIDs  []string                `json:"blocked_by_ids"`
+	BlocksIDs     []string                `json:"blocks_ids"`
+	ChildIDs      []string                `json:"child_ids"`
+}
+
+type ProjectGraphView struct {
+	Issues []IssueSummary `json:"issues"`
+	Links  []Link         `json:"links"`
+}
+
 type Export struct {
 	Metadata  map[string]any   `json:"metadata"`
 	IssueData map[string][]any `json:"issue_data,omitempty"`

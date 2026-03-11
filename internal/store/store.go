@@ -406,6 +406,102 @@ func (s *Store) IssueDetailView(ctx context.Context, id string) (issues.IssueDet
 	return view, nil
 }
 
+func (s *Store) FocusedGraphView(ctx context.Context, id string) (issues.FocusedGraphView, error) {
+	issue, err := s.GetIssue(ctx, id)
+	if err != nil {
+		return issues.FocusedGraphView{}, err
+	}
+
+	view := issues.FocusedGraphView{
+		NodeSummaries: map[string]issues.IssueSummary{},
+		SelectedID:    issue.ID,
+		ParentID:      issue.ParentID,
+		BlockedByIDs:  []string{},
+		BlocksIDs:     []string{},
+		ChildIDs:      []string{},
+	}
+
+	view.BlockedByIDs, err = s.listDirectBlockingIssueIDs(ctx, issue.ID)
+	if err != nil {
+		return issues.FocusedGraphView{}, err
+	}
+
+	view.BlocksIDs, err = s.listDirectBlockedIssueIDs(ctx, issue.ID)
+	if err != nil {
+		return issues.FocusedGraphView{}, err
+	}
+
+	view.ChildIDs, err = s.listDirectChildIssueIDs(ctx, issue.ID)
+	if err != nil {
+		return issues.FocusedGraphView{}, err
+	}
+
+	nodeIDs := []string{}
+	seen := map[string]struct{}{}
+
+	appendNodeID := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+
+		if _, ok := seen[id]; ok {
+			return
+		}
+
+		seen[id] = struct{}{}
+		nodeIDs = append(nodeIDs, id)
+	}
+
+	appendNodeID(issue.ID)
+	appendNodeID(view.ParentID)
+
+	for _, blockerID := range view.BlockedByIDs {
+		appendNodeID(blockerID)
+	}
+
+	for _, blockedID := range view.BlocksIDs {
+		appendNodeID(blockedID)
+	}
+
+	for _, childID := range view.ChildIDs {
+		appendNodeID(childID)
+	}
+
+	summaries, err := s.listIssueSummariesByID(ctx, nodeIDs)
+	if err != nil {
+		return issues.FocusedGraphView{}, err
+	}
+
+	for _, summary := range summaries {
+		view.NodeSummaries[summary.ID] = summary
+	}
+
+	return view, nil
+}
+
+func (s *Store) ProjectGraphView(ctx context.Context) (issues.ProjectGraphView, error) {
+	summaries, err := s.ListIssueSummaries(ctx, ListFilter{})
+	if err != nil {
+		return issues.ProjectGraphView{}, err
+	}
+
+	links, err := s.listProjectGraphLinks(ctx)
+	if err != nil {
+		return issues.ProjectGraphView{}, err
+	}
+
+	if summaries == nil {
+		summaries = []issues.IssueSummary{}
+	}
+
+	if links == nil {
+		links = []issues.Link{}
+	}
+
+	return issues.ProjectGraphView{Issues: summaries, Links: links}, nil
+}
+
 func (s *Store) ListIssues(ctx context.Context, filter ListFilter) ([]issues.Issue, error) {
 	query := `
 		SELECT i.id, i.sequence, i.title, i.description, i.type, i.status, i.priority, COALESCE(i.assignee, ''),
@@ -1002,6 +1098,51 @@ func (s *Store) listDependenciesByIssueID(ctx context.Context, id string) (issue
 	}
 
 	return issues.DependencyList{IssueID: id, BlockedBy: blockedBy, Blocks: blocks}, nil
+}
+
+func (s *Store) listDirectBlockingIssueIDs(ctx context.Context, id string) ([]string, error) {
+	return s.listIssueIDs(ctx, `
+		SELECT blocker.id
+		FROM issue_links l
+		JOIN issues blocker ON blocker.id = l.source_id
+		WHERE l.kind = 'blocks' AND l.target_id = ?
+		ORDER BY blocker.sequence ASC
+	`, id)
+}
+
+func (s *Store) listDirectBlockedIssueIDs(ctx context.Context, id string) ([]string, error) {
+	return s.listIssueIDs(ctx, `
+		SELECT blocked.id
+		FROM issue_links l
+		JOIN issues blocked ON blocked.id = l.target_id
+		WHERE l.kind = 'blocks' AND l.source_id = ?
+		ORDER BY blocked.sequence ASC
+	`, id)
+}
+
+func (s *Store) listDirectChildIssueIDs(ctx context.Context, id string) ([]string, error) {
+	return s.listIssueIDs(ctx, `
+		SELECT child.id
+		FROM issue_links l
+		JOIN issues child ON child.id = l.target_id
+		WHERE l.kind = 'parent_child' AND l.source_id = ?
+		ORDER BY child.sequence ASC
+	`, id)
+}
+
+func (s *Store) listProjectGraphLinks(ctx context.Context) ([]issues.Link, error) {
+	return s.listLinks(ctx, `
+		SELECT l.id, l.source_id, l.target_id, l.kind, l.created_at
+		FROM issue_links l
+		JOIN issues source ON source.id = l.source_id
+		JOIN issues target ON target.id = l.target_id
+		WHERE l.kind IN ('blocks', 'parent_child')
+		ORDER BY
+			CASE l.kind WHEN 'blocks' THEN 0 ELSE 1 END,
+			source.sequence ASC,
+			target.sequence ASC,
+			l.id ASC
+	`)
 }
 
 func (s *Store) listIssueSummariesByID(ctx context.Context, ids []string) ([]issues.IssueSummary, error) {
@@ -1740,6 +1881,29 @@ func scanEvents(rows *sql.Rows) ([]issues.Event, error) {
 	}
 
 	return events, rows.Err()
+}
+
+func (s *Store) listIssueIDs(ctx context.Context, query string, args ...any) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer closeRows(rows)
+
+	ids := []string{}
+
+	for rows.Next() {
+		var id string
+
+		err := rows.Scan(&id)
+		if err != nil {
+			return nil, err
+		}
+
+		ids = append(ids, id)
+	}
+
+	return ids, rows.Err()
 }
 
 func scanIssueSummaries(ctx context.Context, rows *sql.Rows, s *Store) ([]issues.IssueSummary, error) {
