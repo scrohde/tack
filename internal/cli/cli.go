@@ -378,7 +378,7 @@ func (a *App) runShow(ctx context.Context, args []string) error {
 	}
 	defer closeStore(s)
 
-	issue, err := s.GetIssue(ctx, id)
+	issue, err := s.GetIssueDetail(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -1281,7 +1281,7 @@ func printIssueSummary(w io.Writer, issue issues.Issue) error {
 	return err
 }
 
-func printIssueDetail(w io.Writer, issue issues.Issue) error {
+func printIssueDetail(w io.Writer, issue issues.IssueDetail) error {
 	lines := []string{
 		"id: " + issue.ID,
 		fmt.Sprintf("sequence: %d", issue.Sequence),
@@ -1292,12 +1292,61 @@ func printIssueDetail(w io.Writer, issue issues.Issue) error {
 		"assignee: " + issue.Assignee,
 		"parent: " + issue.ParentID,
 		"labels: " + strings.Join(issue.Labels, ","),
+		"blocked_by: " + formatLinkEndpointIDs(issue.BlockedBy, true),
+		"blocks: " + formatLinkEndpointIDs(issue.Blocks, false),
 		"description:",
 		issue.Description,
+		"comments:",
 	}
+
+	if len(issue.Comments) == 0 {
+		lines = append(lines, "  (none)")
+	} else {
+		for _, comment := range issue.Comments {
+			lines = append(lines, fmt.Sprintf("  [%d] %s %s", comment.ID, comment.Author, comment.CreatedAt.UTC().Format(time.RFC3339)))
+			lines = appendIndentedBlock(lines, "    ", comment.Body)
+		}
+	}
+
+	lines = append(lines, "events:")
+
+	if len(issue.Events) == 0 {
+		lines = append(lines, "  (none)")
+	} else {
+		for _, event := range issue.Events {
+			lines = append(lines, fmt.Sprintf("  [%d] %s %s %s %s", event.ID, event.CreatedAt.UTC().Format(time.RFC3339), event.Actor, event.EventType, event.Payload))
+		}
+	}
+
 	_, err := fmt.Fprintln(w, strings.Join(lines, "\n"))
 
 	return err
+}
+
+func formatLinkEndpointIDs(links []issues.Link, source bool) string {
+	if len(links) == 0 {
+		return "(none)"
+	}
+
+	ids := make([]string, 0, len(links))
+	for _, link := range links {
+		if source {
+			ids = append(ids, link.SourceID)
+			continue
+		}
+
+		ids = append(ids, link.TargetID)
+	}
+
+	return strings.Join(ids, ",")
+}
+
+func appendIndentedBlock(lines []string, prefix, body string) []string {
+	for _, line := range strings.Split(body, "\n") {
+		lines = append(lines, prefix+line)
+	}
+
+	return lines
 }
 
 func printIssueTable(w io.Writer, all []issues.Issue) error {

@@ -305,6 +305,54 @@ func (s *Store) GetIssue(ctx context.Context, id string) (issues.Issue, error) {
 	return issue, nil
 }
 
+func (s *Store) GetIssueDetail(ctx context.Context, id string) (issues.IssueDetail, error) {
+	issue, err := s.GetIssue(ctx, id)
+	if err != nil {
+		return issues.IssueDetail{}, err
+	}
+
+	detail := issues.IssueDetail{
+		Issue:     issue,
+		Comments:  []issues.Comment{},
+		BlockedBy: []issues.Link{},
+		Blocks:    []issues.Link{},
+		Events:    []issues.Event{},
+	}
+
+	comments, err := s.listCommentsByIssueID(ctx, issue.ID)
+	if err != nil {
+		return issues.IssueDetail{}, err
+	}
+
+	deps, err := s.listDependenciesByIssueID(ctx, issue.ID)
+	if err != nil {
+		return issues.IssueDetail{}, err
+	}
+
+	events, err := s.listEventsByIssueID(ctx, issue.ID)
+	if err != nil {
+		return issues.IssueDetail{}, err
+	}
+
+	if comments != nil {
+		detail.Comments = comments
+	}
+
+	if deps.BlockedBy != nil {
+		detail.BlockedBy = deps.BlockedBy
+	}
+
+	if deps.Blocks != nil {
+		detail.Blocks = deps.Blocks
+	}
+
+	if events != nil {
+		detail.Events = events
+	}
+
+	return detail, nil
+}
+
 func (s *Store) ListIssues(ctx context.Context, filter ListFilter) ([]issues.Issue, error) {
 	query := `
 		SELECT i.id, i.sequence, i.title, i.description, i.type, i.status, i.priority, COALESCE(i.assignee, ''),
@@ -788,6 +836,10 @@ func (s *Store) ListComments(ctx context.Context, id string) ([]issues.Comment, 
 		return nil, err
 	}
 
+	return s.listCommentsByIssueID(ctx, id)
+}
+
+func (s *Store) listCommentsByIssueID(ctx context.Context, id string) ([]issues.Comment, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, issue_id, body, author, created_at
 		FROM issue_comments
@@ -799,28 +851,7 @@ func (s *Store) ListComments(ctx context.Context, id string) ([]issues.Comment, 
 	}
 	defer closeRows(rows)
 
-	var comments []issues.Comment
-
-	for rows.Next() {
-		var (
-			c       issues.Comment
-			created string
-		)
-
-		err := rows.Scan(&c.ID, &c.IssueID, &c.Body, &c.Author, &created)
-		if err != nil {
-			return nil, err
-		}
-
-		c.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
-		if err != nil {
-			return nil, err
-		}
-
-		comments = append(comments, c)
-	}
-
-	return comments, rows.Err()
+	return scanComments(rows)
 }
 
 func (s *Store) AddDependency(ctx context.Context, blockedID, blockerID, actor string) (issues.Link, error) {
@@ -903,6 +934,10 @@ func (s *Store) ListDependencies(ctx context.Context, id string) (issues.Depende
 		return issues.DependencyList{}, err
 	}
 
+	return s.listDependenciesByIssueID(ctx, id)
+}
+
+func (s *Store) listDependenciesByIssueID(ctx context.Context, id string) (issues.DependencyList, error) {
 	blockedBy, err := s.listLinks(ctx, `SELECT id, source_id, target_id, kind, created_at FROM issue_links WHERE kind = 'blocks' AND target_id = ? ORDER BY id`, id)
 	if err != nil {
 		return issues.DependencyList{}, err
@@ -914,6 +949,21 @@ func (s *Store) ListDependencies(ctx context.Context, id string) (issues.Depende
 	}
 
 	return issues.DependencyList{IssueID: id, BlockedBy: blockedBy, Blocks: blocks}, nil
+}
+
+func (s *Store) listEventsByIssueID(ctx context.Context, id string) ([]issues.Event, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, COALESCE(issue_id, ''), actor, event_type, payload_json, created_at
+		FROM issue_events
+		WHERE issue_id = ?
+		ORDER BY id ASC
+	`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer closeRows(rows)
+
+	return scanEvents(rows)
 }
 
 func (s *Store) AddLabels(ctx context.Context, id string, labels []string, actor string) ([]string, error) {
@@ -1063,25 +1113,9 @@ func (s *Store) Export(ctx context.Context) (issues.Export, error) {
 	}
 	defer closeRows(commentsRows)
 
-	var comments []issues.Comment
-
-	for commentsRows.Next() {
-		var (
-			c       issues.Comment
-			created string
-		)
-
-		err := commentsRows.Scan(&c.ID, &c.IssueID, &c.Body, &c.Author, &created)
-		if err != nil {
-			return issues.Export{}, err
-		}
-
-		c.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
-		if err != nil {
-			return issues.Export{}, err
-		}
-
-		comments = append(comments, c)
+	comments, err := scanComments(commentsRows)
+	if err != nil {
+		return issues.Export{}, err
 	}
 
 	eventRows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(issue_id, ''), actor, event_type, payload_json, created_at FROM issue_events ORDER BY id`)
@@ -1090,25 +1124,9 @@ func (s *Store) Export(ctx context.Context) (issues.Export, error) {
 	}
 	defer closeRows(eventRows)
 
-	var events []issues.Event
-
-	for eventRows.Next() {
-		var (
-			e       issues.Event
-			created string
-		)
-
-		err := eventRows.Scan(&e.ID, &e.IssueID, &e.Actor, &e.EventType, &e.Payload, &created)
-		if err != nil {
-			return issues.Export{}, err
-		}
-
-		e.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
-		if err != nil {
-			return issues.Export{}, err
-		}
-
-		events = append(events, e)
+	events, err := scanEvents(eventRows)
+	if err != nil {
+		return issues.Export{}, err
 	}
 
 	metaRows, err := s.db.QueryContext(ctx, `SELECT key, value FROM issue_metadata ORDER BY key`)
@@ -1598,6 +1616,56 @@ func scanIssues(rows *sql.Rows, s *Store) ([]issues.Issue, error) {
 	}
 
 	return out, nil
+}
+
+func scanComments(rows *sql.Rows) ([]issues.Comment, error) {
+	var comments []issues.Comment
+
+	for rows.Next() {
+		var (
+			comment issues.Comment
+			created string
+		)
+
+		err := rows.Scan(&comment.ID, &comment.IssueID, &comment.Body, &comment.Author, &created)
+		if err != nil {
+			return nil, err
+		}
+
+		comment.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+		if err != nil {
+			return nil, err
+		}
+
+		comments = append(comments, comment)
+	}
+
+	return comments, rows.Err()
+}
+
+func scanEvents(rows *sql.Rows) ([]issues.Event, error) {
+	var events []issues.Event
+
+	for rows.Next() {
+		var (
+			event   issues.Event
+			created string
+		)
+
+		err := rows.Scan(&event.ID, &event.IssueID, &event.Actor, &event.EventType, &event.Payload, &created)
+		if err != nil {
+			return nil, err
+		}
+
+		event.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+		if err != nil {
+			return nil, err
+		}
+
+		events = append(events, event)
+	}
+
+	return events, rows.Err()
 }
 
 func scanIssueSummaries(ctx context.Context, rows *sql.Rows, s *Store) ([]issues.IssueSummary, error) {

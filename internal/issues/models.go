@@ -97,6 +97,14 @@ type Event struct {
 	ID        int64     `json:"id"`
 }
 
+type IssueDetail struct {
+	Issue
+	Comments  []Comment `json:"comments"`
+	BlockedBy []Link    `json:"blocked_by"`
+	Blocks    []Link    `json:"blocks"`
+	Events    []Event   `json:"events"`
+}
+
 type Export struct {
 	Metadata  map[string]any   `json:"metadata"`
 	IssueData map[string][]any `json:"issue_data,omitempty"`

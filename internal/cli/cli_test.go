@@ -635,6 +635,109 @@ func TestImportPlaintextOutput(t *testing.T) {
 	}
 }
 
+func TestShowJSONIncludesRelatedData(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+	t.Setenv("TACK_ACTOR", "alice")
+
+	runCLI(t, repo, "init")
+
+	blocker := createIssue(t, repo, []string{
+		"create",
+		"--title", "blocker",
+		"--description", "body",
+		"--json",
+	})
+
+	target := createIssue(t, repo, []string{
+		"create",
+		"--title", "target",
+		"--description", "body",
+		"--depends-on", stringField(t, blocker, "id"),
+		"--json",
+	})
+
+	createIssue(t, repo, []string{
+		"create",
+		"--title", "downstream",
+		"--description", "body",
+		"--depends-on", stringField(t, target, "id"),
+		"--json",
+	})
+
+	runCLI(t, repo, "comment", "add", stringField(t, target, "id"), "--body", "note")
+
+	shown := runJSON[map[string]any](t, repo, "show", stringField(t, target, "id"), "--json")
+
+	comments, ok := shown["comments"].([]any)
+	if !ok || len(comments) != 1 {
+		t.Fatalf("unexpected comments payload: %#v", shown)
+	}
+
+	comment, ok := comments[0].(map[string]any)
+	if !ok || comment["body"] != "note" {
+		t.Fatalf("unexpected comment payload: %#v", shown["comments"])
+	}
+
+	blockedBy, ok := shown["blocked_by"].([]any)
+	if !ok || len(blockedBy) != 1 {
+		t.Fatalf("unexpected blocked_by payload: %#v", shown)
+	}
+
+	blockedLink, ok := blockedBy[0].(map[string]any)
+	if !ok || blockedLink["source_id"] != blocker["id"] || blockedLink["target_id"] != target["id"] {
+		t.Fatalf("unexpected blocked_by link: %#v", shown["blocked_by"])
+	}
+
+	blocks, ok := shown["blocks"].([]any)
+	if !ok || len(blocks) != 1 {
+		t.Fatalf("unexpected blocks payload: %#v", shown)
+	}
+
+	events, ok := shown["events"].([]any)
+	if !ok || len(events) != 2 {
+		t.Fatalf("unexpected events payload: %#v", shown)
+	}
+
+	lastEvent, ok := events[len(events)-1].(map[string]any)
+	if !ok || lastEvent["event_type"] != "comment_added" {
+		t.Fatalf("unexpected event payload: %#v", shown["events"])
+	}
+}
+
+func TestShowPlaintextIncludesDetailSections(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+	t.Setenv("TACK_ACTOR", "alice")
+
+	runCLI(t, repo, "init")
+
+	created := createIssue(t, repo, []string{
+		"create",
+		"--title", "issue",
+		"--description", "body",
+		"--json",
+	})
+
+	out, err := runCLIBytes(repo, "show", stringField(t, created, "id"))
+	if err != nil {
+		t.Fatalf("show failed: %v", err)
+	}
+
+	text := string(out)
+	for _, want := range []string{
+		"blocked_by: (none)",
+		"blocks: (none)",
+		"comments:\n  (none)",
+		"events:\n",
+		"issue_created",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected show output to contain %q, got %q", want, text)
+		}
+	}
+}
+
 func createIssue(t *testing.T, repo string, args []string) map[string]any {
 	t.Helper()
 

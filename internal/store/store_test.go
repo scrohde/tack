@@ -419,6 +419,99 @@ func TestCommentsLabelsAndEvents(t *testing.T) {
 	}
 }
 
+func TestGetIssueDetailIncludesRelatedData(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	blocker, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "blocker",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	issue, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "issue",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+		DependsOn:   []string{blocker.ID},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "downstream",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+		DependsOn:   []string{issue.ID},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.AddComment(ctx, issue.ID, "note", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	detail, err := s.GetIssueDetail(ctx, issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(detail.Comments) != 1 || detail.Comments[0].Body != "note" {
+		t.Fatalf("unexpected comments: %#v", detail.Comments)
+	}
+
+	if len(detail.BlockedBy) != 1 || detail.BlockedBy[0].SourceID != blocker.ID || detail.BlockedBy[0].TargetID != issue.ID {
+		t.Fatalf("unexpected blocked_by links: %#v", detail.BlockedBy)
+	}
+
+	if len(detail.Blocks) != 1 || detail.Blocks[0].SourceID != issue.ID {
+		t.Fatalf("unexpected blocks links: %#v", detail.Blocks)
+	}
+
+	if len(detail.Events) != 2 || detail.Events[1].EventType != "comment_added" {
+		t.Fatalf("unexpected events: %#v", detail.Events)
+	}
+}
+
+func TestGetIssueDetailIncludesEmptyCollections(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	issue, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "issue",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	detail, err := s.GetIssueDetail(ctx, issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if detail.Comments == nil || detail.BlockedBy == nil || detail.Blocks == nil || detail.Events == nil {
+		t.Fatalf("expected initialized detail slices, got %#v", detail)
+	}
+
+	if len(detail.Comments) != 0 || len(detail.BlockedBy) != 0 || len(detail.Blocks) != 0 || len(detail.Events) != 1 {
+		t.Fatalf("unexpected detail collections: %#v", detail)
+	}
+}
+
 func TestImportIssuesCreatesGraph(t *testing.T) {
 	ctx := testutil.Context(t)
 	repo := testutil.TempRepo(t)
