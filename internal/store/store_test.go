@@ -340,6 +340,47 @@ func TestDependencyCycleRejected(t *testing.T) {
 	}
 }
 
+func TestUpdateIssueRejectsParentCycles(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	parent, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "parent",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	child, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "child",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+		ParentID:    parent.ID,
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.UpdateIssue(ctx, parent.ID, store.UpdateIssueInput{ParentID: &child.ID}, "alice")
+	if err == nil || !strings.Contains(err.Error(), "parent cycle detected") {
+		t.Fatalf("expected parent cycle error, got %v", err)
+	}
+
+	reloaded, err := s.GetIssue(ctx, parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if reloaded.ParentID != "" {
+		t.Fatalf("expected parent to remain unset after rejected update, got %#v", reloaded)
+	}
+}
+
 func TestCommentsLabelsAndEvents(t *testing.T) {
 	ctx := testutil.Context(t)
 	repo := testutil.TempRepo(t)
@@ -507,6 +548,39 @@ func TestImportIssuesRejectsMissingReference(t *testing.T) {
 	}
 }
 
+func TestImportIssuesRejectsParentCycles(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	_, err := s.ImportIssues(ctx, store.ImportManifest{
+		Issues: []store.ImportIssueInput{
+			{
+				ID:     "a",
+				Title:  "A",
+				Parent: "b",
+			},
+			{
+				ID:     "b",
+				Title:  "B",
+				Parent: "a",
+			},
+		},
+	}, "alice")
+	if err == nil || !strings.Contains(err.Error(), "parent cycle detected") {
+		t.Fatalf("expected parent cycle error, got %v", err)
+	}
+
+	listed, err := s.ListIssues(ctx, store.ListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(listed) != 0 {
+		t.Fatalf("expected import rollback on parent cycle, got %#v", listed)
+	}
+}
+
 func TestImportIssuesRollsBackOnInvalidGraph(t *testing.T) {
 	ctx := testutil.Context(t)
 	repo := testutil.TempRepo(t)
@@ -538,4 +612,142 @@ func TestImportIssuesRollsBackOnInvalidGraph(t *testing.T) {
 	if len(listed) != 0 {
 		t.Fatalf("expected import rollback, got %#v", listed)
 	}
+}
+
+func TestAddDependencyDuplicateAddIsIdempotent(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	blocker, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "blocker",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blocked, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "blocked",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := s.AddDependency(ctx, blocked.ID, blocker.ID, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := s.AddDependency(ctx, blocked.ID, blocker.ID, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if first.ID != second.ID || !first.CreatedAt.Equal(second.CreatedAt) {
+		t.Fatalf("expected duplicate add to return existing link, got first=%#v second=%#v", first, second)
+	}
+
+	deps, err := s.ListDependencies(ctx, blocked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(deps.BlockedBy) != 1 || deps.BlockedBy[0].ID != first.ID {
+		t.Fatalf("expected a single stored dependency, got %#v", deps)
+	}
+
+	exported, err := s.Export(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(exported.Links) != 1 {
+		t.Fatalf("expected one dependency link in export, got %#v", exported.Links)
+	}
+
+	if got := countEventsByType(exported.Events, "dependency_added"); got != 1 {
+		t.Fatalf("expected one dependency_added event, got %d", got)
+	}
+}
+
+func TestRemoveDependencyMissingLinkIsNoOp(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	blocker, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "blocker",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blocked, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "blocked",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.RemoveDependency(ctx, blocked.ID, blocker.ID, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.AddDependency(ctx, blocked.ID, blocker.ID, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.RemoveDependency(ctx, blocked.ID, blocker.ID, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.RemoveDependency(ctx, blocked.ID, blocker.ID, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deps, err := s.ListDependencies(ctx, blocked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(deps.BlockedBy) != 0 {
+		t.Fatalf("expected dependency list to be empty, got %#v", deps)
+	}
+
+	exported, err := s.Export(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := countEventsByType(exported.Events, "dependency_removed"); got != 1 {
+		t.Fatalf("expected one dependency_removed event, got %d", got)
+	}
+}
+
+func countEventsByType(events []issues.Event, eventType string) int {
+	count := 0
+
+	for _, event := range events {
+		if event.EventType == eventType {
+			count++
+		}
+	}
+
+	return count
 }

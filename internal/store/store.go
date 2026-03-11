@@ -418,7 +418,8 @@ func (s *Store) ListIssueSummaries(ctx context.Context, filter ListFilter) ([]is
 }
 
 func (s *Store) ReadyIssues(ctx context.Context, filter ListFilter) ([]issues.Issue, error) {
-	if err := validateReadyFilter(filter); err != nil {
+	err := validateReadyFilter(filter)
+	if err != nil {
 		return nil, err
 	}
 
@@ -480,7 +481,8 @@ func (s *Store) ReadyIssues(ctx context.Context, filter ListFilter) ([]issues.Is
 }
 
 func (s *Store) ReadyIssueSummaries(ctx context.Context, filter ListFilter) ([]issues.IssueSummary, error) {
-	if err := validateReadyFilter(filter); err != nil {
+	err := validateReadyFilter(filter)
+	if err != nil {
 		return nil, err
 	}
 
@@ -619,6 +621,11 @@ func (s *Store) UpdateIssue(ctx context.Context, id string, input UpdateIssueInp
 
 		if parentID != "" {
 			err := ensureIssueExists(ctx, tx, parentID)
+			if err != nil {
+				return issues.Issue{}, err
+			}
+
+			err = validateParentAssignment(ctx, tx, id, parentID)
 			if err != nil {
 				return issues.Issue{}, err
 			}
@@ -848,17 +855,19 @@ func (s *Store) AddDependency(ctx context.Context, blockedID, blockerID, actor s
 
 	now := time.Now().UTC()
 
-	link, err := addDependencyTxWithLink(ctx, tx, blockedID, blockerID, now)
+	link, inserted, err := addDependencyTxWithLink(ctx, tx, blockedID, blockerID, now)
 	if err != nil {
 		return issues.Link{}, err
 	}
 
-	err = appendEventTx(ctx, tx, blockedID, actor, "dependency_added", map[string]any{
-		"blocked_id": blockedID,
-		"blocker_id": blockerID,
-	})
-	if err != nil {
-		return issues.Link{}, err
+	if inserted {
+		err = appendEventTx(ctx, tx, blockedID, actor, "dependency_added", map[string]any{
+			"blocked_id": blockedID,
+			"blocker_id": blockerID,
+		})
+		if err != nil {
+			return issues.Link{}, err
+		}
 	}
 
 	err = tx.Commit()
@@ -886,19 +895,26 @@ func (s *Store) RemoveDependency(ctx context.Context, blockedID, blockerID, acto
 		return err
 	}
 
-	_, err = tx.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 		DELETE FROM issue_links WHERE kind = 'blocks' AND source_id = ? AND target_id = ?
 	`, blockerID, blockedID)
 	if err != nil {
 		return err
 	}
 
-	err = appendEventTx(ctx, tx, blockedID, actor, "dependency_removed", map[string]any{
-		"blocked_id": blockedID,
-		"blocker_id": blockerID,
-	})
+	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return err
+	}
+
+	if rowsAffected > 0 {
+		err = appendEventTx(ctx, tx, blockedID, actor, "dependency_removed", map[string]any{
+			"blocked_id": blockedID,
+			"blocker_id": blockerID,
+		})
+		if err != nil {
+			return err
+		}
 	}
 
 	return tx.Commit()
@@ -1275,38 +1291,38 @@ func (s *Store) listLinks(ctx context.Context, query string, args ...any) ([]iss
 }
 
 func addDependencyTx(ctx context.Context, tx *sql.Tx, blockedID, blockerID string, now time.Time) error {
-	_, err := addDependencyTxWithLink(ctx, tx, blockedID, blockerID, now)
+	_, _, err := addDependencyTxWithLink(ctx, tx, blockedID, blockerID, now)
 
 	return err
 }
 
-func addDependencyTxWithLink(ctx context.Context, tx *sql.Tx, blockedID, blockerID string, now time.Time) (issues.Link, error) {
+func addDependencyTxWithLink(ctx context.Context, tx *sql.Tx, blockedID, blockerID string, now time.Time) (issues.Link, bool, error) {
 	blockedID = strings.TrimSpace(blockedID)
 
 	var err error
 
 	blockerID = strings.TrimSpace(blockerID)
 	if blockedID == blockerID {
-		return issues.Link{}, errors.New("an issue cannot depend on itself")
+		return issues.Link{}, false, errors.New("an issue cannot depend on itself")
 	}
 
 	err = ensureIssueExists(ctx, tx, blockedID)
 	if err != nil {
-		return issues.Link{}, err
+		return issues.Link{}, false, err
 	}
 
 	err = ensureIssueExists(ctx, tx, blockerID)
 	if err != nil {
-		return issues.Link{}, err
+		return issues.Link{}, false, err
 	}
 
 	hasCycle, err := dependencyPathExists(ctx, tx, blockedID, blockerID)
 	if err != nil {
-		return issues.Link{}, err
+		return issues.Link{}, false, err
 	}
 
 	if hasCycle {
-		return issues.Link{}, fmt.Errorf("dependency cycle detected between %s and %s", blockedID, blockerID)
+		return issues.Link{}, false, fmt.Errorf("dependency cycle detected between %s and %s", blockedID, blockerID)
 	}
 
 	result, err := tx.ExecContext(ctx, `
@@ -1315,12 +1331,26 @@ func addDependencyTxWithLink(ctx context.Context, tx *sql.Tx, blockedID, blocker
 		ON CONFLICT(source_id, target_id, kind) DO NOTHING
 	`, blockerID, blockedID, now.Format(time.RFC3339Nano))
 	if err != nil {
-		return issues.Link{}, err
+		return issues.Link{}, false, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return issues.Link{}, false, err
+	}
+
+	if rowsAffected == 0 {
+		link, err := getLinkTx(ctx, tx, blockerID, blockedID, "blocks")
+		if err != nil {
+			return issues.Link{}, false, err
+		}
+
+		return link, false, nil
 	}
 
 	id, err := result.LastInsertId()
 	if err != nil {
-		return issues.Link{}, err
+		return issues.Link{}, false, err
 	}
 
 	return issues.Link{
@@ -1329,7 +1359,7 @@ func addDependencyTxWithLink(ctx context.Context, tx *sql.Tx, blockedID, blocker
 		TargetID:  blockedID,
 		Kind:      "blocks",
 		CreatedAt: now,
-	}, nil
+	}, true, nil
 }
 
 func dependencyPathExists(ctx context.Context, tx *sql.Tx, startBlocked, desiredBlocker string) (bool, error) {
@@ -1355,6 +1385,69 @@ func dependencyPathExists(ctx context.Context, tx *sql.Tx, startBlocked, desired
 	}
 
 	return exists, nil
+}
+
+func validateParentAssignment(ctx context.Context, tx *sql.Tx, childID, parentID string) error {
+	hasCycle, err := parentPathExists(ctx, tx, parentID, childID)
+	if err != nil {
+		return err
+	}
+
+	if hasCycle {
+		return fmt.Errorf("parent cycle detected between %s and %s", childID, parentID)
+	}
+
+	return nil
+}
+
+func parentPathExists(ctx context.Context, tx *sql.Tx, startID, desiredAncestorID string) (bool, error) {
+	row := tx.QueryRowContext(ctx, `
+		WITH RECURSIVE ancestry(id, parent_id) AS (
+			SELECT id, parent_id
+			FROM issues
+			WHERE id = ?
+			UNION
+			SELECT i.id, i.parent_id
+			FROM issues i
+			JOIN ancestry a ON i.id = a.parent_id
+			WHERE a.parent_id IS NOT NULL
+		)
+		SELECT EXISTS(SELECT 1 FROM ancestry WHERE id = ?)
+	`, startID, desiredAncestorID)
+
+	var exists bool
+
+	err := row.Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+
+	return exists, nil
+}
+
+func getLinkTx(ctx context.Context, tx *sql.Tx, sourceID, targetID, kind string) (issues.Link, error) {
+	row := tx.QueryRowContext(ctx, `
+		SELECT id, source_id, target_id, kind, created_at
+		FROM issue_links
+		WHERE source_id = ? AND target_id = ? AND kind = ?
+	`, sourceID, targetID, kind)
+
+	var (
+		link    issues.Link
+		created string
+	)
+
+	err := row.Scan(&link.ID, &link.SourceID, &link.TargetID, &link.Kind, &created)
+	if err != nil {
+		return issues.Link{}, err
+	}
+
+	link.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		return issues.Link{}, err
+	}
+
+	return link, nil
 }
 
 func addLabelsTx(ctx context.Context, tx *sql.Tx, id string, labels []string, now time.Time) error {
@@ -1879,7 +1972,54 @@ func normalizeImportManifest(manifest ImportManifest) ([]normalizedImportIssue, 
 		}
 	}
 
+	err := validateImportParentGraph(out)
+	if err != nil {
+		return nil, err
+	}
+
 	return out, nil
+}
+
+func validateImportParentGraph(issues []normalizedImportIssue) error {
+	parents := make(map[string]string, len(issues))
+	states := make(map[string]int, len(issues))
+
+	for _, issue := range issues {
+		parents[issue.Alias] = issue.ParentAlias
+	}
+
+	var visit func(string) error
+
+	visit = func(alias string) error {
+		switch states[alias] {
+		case 1:
+			return fmt.Errorf("parent cycle detected involving %q", alias)
+		case 2:
+			return nil
+		}
+
+		states[alias] = 1
+
+		if parentAlias := parents[alias]; parentAlias != "" {
+			err := visit(parentAlias)
+			if err != nil {
+				return err
+			}
+		}
+
+		states[alias] = 2
+
+		return nil
+	}
+
+	for _, issue := range issues {
+		err := visit(issue.Alias)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func normalizeImportAliases(values []string) []string {
