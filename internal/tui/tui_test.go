@@ -208,6 +208,109 @@ func TestArrowNavigationWrapsAcrossDetailTabs(t *testing.T) {
 	}
 }
 
+func TestArrowKeysMirrorTabNavigation(t *testing.T) {
+	t.Parallel()
+
+	buildModel := func(t *testing.T) *model {
+		t.Helper()
+
+		reader := &fakeReader{
+			allSummaries: []issues.IssueSummary{
+				{ID: "tk-1", Title: "first", Status: issues.StatusOpen, Type: issues.TypeTask},
+			},
+			details: map[string]issues.IssueDetailView{
+				"tk-1": {Issue: issues.Issue{ID: "tk-1", Title: "first", Status: issues.StatusOpen}},
+			},
+			focused: map[string]issues.FocusedGraphView{
+				"tk-1": {SelectedID: "tk-1", NodeSummaries: map[string]issues.IssueSummary{"tk-1": {ID: "tk-1", Title: "first", Status: issues.StatusOpen}}},
+			},
+			project: issues.ProjectGraphView{
+				Issues: []issues.IssueSummary{
+					{ID: "tk-1", Title: "first", Status: issues.StatusOpen, Type: issues.TypeTask},
+				},
+			},
+		}
+
+		m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		return m
+	}
+
+	testCases := []struct {
+		name          string
+		startFocus    paneFocus
+		startTab      detailTab
+		firstKey      string
+		secondKey     string
+		expectedFocus paneFocus
+		expectedTab   detailTab
+	}{
+		{
+			name:          "right matches tab from browser",
+			startFocus:    paneBrowser,
+			startTab:      tabDetails,
+			firstKey:      "right",
+			secondKey:     "tab",
+			expectedFocus: paneDetail,
+			expectedTab:   tabDetails,
+		},
+		{
+			name:          "right matches tab inside detail tabs",
+			startFocus:    paneDetail,
+			startTab:      tabComments,
+			firstKey:      "right",
+			secondKey:     "tab",
+			expectedFocus: paneDetail,
+			expectedTab:   tabFocusedGraph,
+		},
+		{
+			name:          "left matches shift+tab from details",
+			startFocus:    paneDetail,
+			startTab:      tabDetails,
+			firstKey:      "left",
+			secondKey:     "shift+tab",
+			expectedFocus: paneBrowser,
+			expectedTab:   tabDetails,
+		},
+		{
+			name:          "left matches shift+tab from browser",
+			startFocus:    paneBrowser,
+			startTab:      tabDetails,
+			firstKey:      "left",
+			secondKey:     "shift+tab",
+			expectedFocus: paneDetail,
+			expectedTab:   tabProjectGraph,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			arrowModel := buildModel(t)
+			arrowModel.focus = tc.startFocus
+			arrowModel.activeTab = tc.startTab
+			arrowModel.handleKey(tc.firstKey)
+
+			tabModel := buildModel(t)
+			tabModel.focus = tc.startFocus
+			tabModel.activeTab = tc.startTab
+			tabModel.handleKey(tc.secondKey)
+
+			if arrowModel.focus != tc.expectedFocus || arrowModel.activeTab != tc.expectedTab {
+				t.Fatalf("unexpected arrow result: focus=%s tab=%d", arrowModel.focus, arrowModel.activeTab)
+			}
+
+			if arrowModel.focus != tabModel.focus || arrowModel.activeTab != tabModel.activeTab {
+				t.Fatalf("expected %q to match %q, got arrow focus=%s tab=%d and tab focus=%s tab=%d", tc.firstKey, tc.secondKey, arrowModel.focus, arrowModel.activeTab, tabModel.focus, tabModel.activeTab)
+			}
+		})
+	}
+}
+
 func TestHelpTextMentionsArrowNavigationAndGraphPanning(t *testing.T) {
 	t.Parallel()
 
@@ -225,6 +328,77 @@ func TestHelpTextMentionsArrowNavigationAndGraphPanning(t *testing.T) {
 
 	if !strings.Contains(help, "h/l pan horizontally") {
 		t.Fatalf("expected help to mention h/l graph panning, got:\n%s", help)
+	}
+}
+
+func TestGraphTabsKeepHorizontalPanningOnHAndLOnly(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		allSummaries: []issues.IssueSummary{
+			{ID: "tk-2", Title: "Selected issue", Status: issues.StatusOpen, Type: issues.TypeTask},
+		},
+		details: map[string]issues.IssueDetailView{
+			"tk-2": {Issue: issues.Issue{ID: "tk-2", Title: "Selected issue", Status: issues.StatusOpen}},
+		},
+		focused: map[string]issues.FocusedGraphView{
+			"tk-2": {
+				SelectedID:   "tk-2",
+				ParentID:     "tk-1",
+				BlockedByIDs: []string{"tk-3"},
+				BlocksIDs:    []string{"tk-4"},
+				ChildIDs:     []string{"tk-5"},
+				NodeSummaries: map[string]issues.IssueSummary{
+					"tk-1": {ID: "tk-1", Title: "Parent epic", Status: issues.StatusClosed, Type: issues.TypeEpic},
+					"tk-2": {ID: "tk-2", Title: "Selected issue", Status: issues.StatusOpen, Type: issues.TypeTask},
+					"tk-3": {ID: "tk-3", Title: "Blocking bug", Status: issues.StatusBlocked, Type: issues.TypeBug},
+					"tk-4": {ID: "tk-4", Title: "Downstream feature", Status: issues.StatusOpen, Type: issues.TypeFeature},
+					"tk-5": {ID: "tk-5", Title: "Child task", Status: issues.StatusOpen, Type: issues.TypeTask},
+				},
+			},
+		},
+		project: issues.ProjectGraphView{
+			Issues: []issues.IssueSummary{
+				{ID: "tk-2", Title: "Selected issue", Status: issues.StatusOpen, Type: issues.TypeTask},
+			},
+		},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.focus = paneDetail
+	m.activeTab = tabFocusedGraph
+
+	m.handleKey("l")
+	if m.focusedGraphViewport.x == 0 {
+		t.Fatalf("expected l to pan the focused graph horizontally, got %#v", m.focusedGraphViewport)
+	}
+
+	xAfterL := m.focusedGraphViewport.x
+	m.handleKey("right")
+
+	if m.activeTab != tabProjectGraph {
+		t.Fatalf("expected right to advance to project graph, got tab=%d", m.activeTab)
+	}
+
+	if m.focusedGraphViewport.x != xAfterL {
+		t.Fatalf("expected right to leave focused graph pan unchanged, got %#v", m.focusedGraphViewport)
+	}
+
+	m.handleKey("left")
+
+	if m.activeTab != tabFocusedGraph {
+		t.Fatalf("expected left to reverse back to focused graph, got tab=%d", m.activeTab)
+	}
+
+	xBeforeH := m.focusedGraphViewport.x
+	m.handleKey("h")
+
+	if m.focusedGraphViewport.x >= xBeforeH {
+		t.Fatalf("expected h to pan the focused graph back left, before=%d after=%d", xBeforeH, m.focusedGraphViewport.x)
 	}
 }
 
