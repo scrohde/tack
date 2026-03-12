@@ -199,9 +199,9 @@ func (m *model) handleKey(key string) tea.Cmd {
 	case "/":
 		m.filterInputActive = true
 		m.filterInput = ""
-	case "tab":
+	case "tab", "right":
 		m.advanceFocusOrTab()
-	case "shift+tab":
+	case "shift+tab", "left":
 		m.reverseFocusOrTab()
 	case "j", "down":
 		m.moveSelection(1)

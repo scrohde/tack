@@ -52,10 +52,10 @@ func (m *model) handleGraphViewportKey(key string) bool {
 	}
 
 	switch key {
-	case "left", "h":
+	case "h":
 		viewport.x = maxInt(0, viewport.x-4)
 		return true
-	case "right", "l":
+	case "l":
 		viewport.x += 4
 		return true
 	case "up", "k":

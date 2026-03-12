@@ -124,25 +124,25 @@ func TestTabNavigationAndEscapeAreDeterministic(t *testing.T) {
 		t.Fatalf("unexpected initial focus state: focus=%s tab=%d", m.focus, m.activeTab)
 	}
 
-	m.handleKey("tab")
+	m.handleKey("right")
 
 	if m.focus != paneDetail || m.activeTab != tabDetails {
 		t.Fatalf("expected detail pane focus, got focus=%s tab=%d", m.focus, m.activeTab)
 	}
 
-	m.handleKey("tab")
+	m.handleKey("right")
 
 	if m.activeTab != tabComments {
 		t.Fatalf("expected comments tab, got %d", m.activeTab)
 	}
 
-	m.handleKey("tab")
+	m.handleKey("right")
 
 	if m.activeTab != tabFocusedGraph {
 		t.Fatalf("expected focused graph tab, got %d", m.activeTab)
 	}
 
-	m.handleKey("shift+tab")
+	m.handleKey("left")
 
 	if m.activeTab != tabComments {
 		t.Fatalf("expected comments tab after reverse, got %d", m.activeTab)
@@ -158,6 +158,53 @@ func TestTabNavigationAndEscapeAreDeterministic(t *testing.T) {
 
 	if m.focus != paneBrowser || m.pinnedID != "" {
 		t.Fatalf("expected browser focus and cleared pin, got pinned=%q focus=%s", m.pinnedID, m.focus)
+	}
+}
+
+func TestArrowNavigationWrapsAcrossDetailTabs(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		allSummaries: []issues.IssueSummary{
+			{ID: "tk-1", Title: "first", Status: issues.StatusOpen, Type: issues.TypeTask},
+		},
+		details: map[string]issues.IssueDetailView{
+			"tk-1": {Issue: issues.Issue{ID: "tk-1", Title: "first", Status: issues.StatusOpen}},
+		},
+		focused: map[string]issues.FocusedGraphView{
+			"tk-1": {SelectedID: "tk-1", NodeSummaries: map[string]issues.IssueSummary{"tk-1": {ID: "tk-1", Title: "first", Status: issues.StatusOpen}}},
+		},
+		project: issues.ProjectGraphView{
+			Issues: []issues.IssueSummary{
+				{ID: "tk-1", Title: "first", Status: issues.StatusOpen, Type: issues.TypeTask},
+			},
+		},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.handleKey("right")
+	m.handleKey("right")
+	m.handleKey("right")
+	m.handleKey("right")
+
+	if m.focus != paneDetail || m.activeTab != tabProjectGraph {
+		t.Fatalf("expected project graph after advancing with right, got focus=%s tab=%d", m.focus, m.activeTab)
+	}
+
+	m.handleKey("right")
+
+	if m.focus != paneDetail || m.activeTab != tabDetails {
+		t.Fatalf("expected wrap back to details after project graph, got focus=%s tab=%d", m.focus, m.activeTab)
+	}
+
+	m.handleKey("left")
+
+	if m.focus != paneBrowser || m.activeTab != tabDetails {
+		t.Fatalf("expected reverse from details to browser, got focus=%s tab=%d", m.focus, m.activeTab)
 	}
 }
 
