@@ -208,6 +208,26 @@ func TestArrowNavigationWrapsAcrossDetailTabs(t *testing.T) {
 	}
 }
 
+func TestHelpTextMentionsArrowNavigationAndGraphPanning(t *testing.T) {
+	t.Parallel()
+
+	m := &model{}
+
+	footer := m.renderFooter()
+	if !strings.Contains(footer, "tab/left/right switch") {
+		t.Fatalf("expected footer to mention left/right switching, got %q", footer)
+	}
+
+	help := m.renderExpandedHelp()
+	if !strings.Contains(help, "tab/shift+tab and left/right switch panes or tabs") {
+		t.Fatalf("expected help to mention left/right navigation, got:\n%s", help)
+	}
+
+	if !strings.Contains(help, "h/l pan horizontally") {
+		t.Fatalf("expected help to mention h/l graph panning, got:\n%s", help)
+	}
+}
+
 func TestFilterEditorUpdatesFilterAndSummaries(t *testing.T) {
 	t.Parallel()
 

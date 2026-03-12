@@ -347,21 +347,21 @@ func (m *model) renderHeader() string {
 }
 
 func (m *model) renderFooter() string {
-	return "q quit  tab switch  j/k move or scroll  enter pin  / filter  g/G graphs  ? more"
+	return "q quit  tab/left/right switch  j/k move or scroll  enter pin  / filter  g/G graphs  ? more"
 }
 
 func (m *model) renderExpandedHelp() string {
 	return strings.Join([]string{
 		"Controls",
-		"q quit, ? toggle help, tab/shift+tab switch panes or tabs",
-		"j/k and arrows move the issue selection",
+		"q quit, ? toggle help, tab/shift+tab and left/right switch panes or tabs",
+		"j/k and up/down move the issue selection",
 		"/ opens filter editing; use status=, type=, label=, assignee=, limit=, or reset",
 		"enter pins the selected issue in the detail pane",
 		"esc returns focus to the browser and clears the current pin",
 		"r toggles between all issues and ready issues, ctrl+r refreshes from disk",
 		"g opens Focused Graph, G opens Project Graph",
-		"In Details and Comments with detail focus, j/k, arrows, pgup/pgdown, and ctrl+u/ctrl+d scroll",
-		"In graph tabs with detail focus, h/j/k/l and arrow keys pan the viewport",
+		"In Details and Comments with detail focus, j/k, up/down, pgup/pgdown, and ctrl+u/ctrl+d scroll",
+		"In graph tabs with detail focus, h/l pan horizontally while j/k and up/down pan vertically",
 	}, "\n")
 }
 
