@@ -79,6 +79,7 @@ type model struct {
 	focusedGraphView issues.FocusedGraphView
 	projectGraphView issues.ProjectGraphView
 
+	browserViewport      textViewport
 	detailsViewport      textViewport
 	commentsViewport     textViewport
 	focusedGraphViewport graphViewport
@@ -243,23 +244,33 @@ func (m *model) View() tea.View {
 func (m *model) render() string {
 	header := headerStyle.Render(m.renderHeader())
 	footer := footerStyle.Render(m.renderFooter())
+	help := ""
+	if m.showHelp {
+		help = helpStyle.Render(m.renderExpandedHelp())
+	}
+
 	parts := []string{header}
 
 	if m.filterInputActive {
 		parts = append(parts, filterStyle.Render(m.renderFilterEditor()))
 	}
 
-	if m.width < 60 || m.height < 12 {
-		parts = append(parts, m.renderCompactLayout(), footer)
+	staticHeight := renderedHeight(parts...) + lipgloss.Height(footer)
+	if help != "" {
+		staticHeight += lipgloss.Height(help)
+	}
 
-		if m.showHelp {
-			parts = append(parts, helpStyle.Render(m.renderExpandedHelp()))
+	bodyHeight := maxInt(1, m.height-staticHeight)
+
+	if m.width < 60 || m.height < 12 || bodyHeight < 8 {
+		parts = append(parts, m.renderCompactLayout(bodyHeight), footer)
+
+		if help != "" {
+			parts = append(parts, help)
 		}
 
 		return lipgloss.JoinVertical(lipgloss.Left, parts...)
 	}
-
-	bodyHeight := maxInt(8, m.height-6-len(parts)+1)
 
 	var body string
 
@@ -279,25 +290,51 @@ func (m *model) render() string {
 
 	rendered := append(parts, body, footer)
 
-	if m.showHelp {
-		rendered = append(rendered, helpStyle.Render(m.renderExpandedHelp()))
+	if help != "" {
+		rendered = append(rendered, help)
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, rendered...)
 }
 
-func (m *model) renderCompactLayout() string {
-	sections := []string{
-		compactWarningStyle.Render(fmt.Sprintf("Compact single-column layout (%dx%d). Full layout needs about 60x12.", m.width, m.height)),
-		"",
-		compactSectionStyle.Render("Issues"),
-		m.renderBrowserBody(maxInt(24, m.width-2)),
-		"",
-		compactSectionStyle.Render(detailTabNames[m.activeTab]),
-		m.renderActiveTabBody(maxInt(24, m.width-2), maxInt(6, m.height/2)),
-	}
+func (m *model) renderCompactLayout(height int) string {
+	warning := compactWarningStyle.Render(fmt.Sprintf("Compact single-column layout (%dx%d). Full layout needs about 60x12.", m.width, m.height))
+	width := maxInt(24, m.width-2)
 
-	return strings.Join(sections, "\n")
+	switch {
+	case height <= 1:
+		return warning
+	case height == 2:
+		return strings.Join([]string{
+			warning,
+			m.renderBrowserBody(width, 1),
+		}, "\n")
+	case height == 3:
+		return strings.Join([]string{
+			warning,
+			compactSectionStyle.Render("Issues"),
+			m.renderBrowserBody(width, 1),
+		}, "\n")
+	case height == 4:
+		return strings.Join([]string{
+			warning,
+			compactSectionStyle.Render("Issues"),
+			m.renderBrowserBody(width, 1),
+			compactSectionStyle.Render(detailTabNames[m.activeTab]),
+		}, "\n")
+	default:
+		contentHeight := height - 3
+		browserHeight := maxInt(1, contentHeight/2)
+		detailHeight := maxInt(1, contentHeight-browserHeight)
+
+		return strings.Join([]string{
+			warning,
+			compactSectionStyle.Render("Issues"),
+			m.renderBrowserBody(width, browserHeight),
+			compactSectionStyle.Render(detailTabNames[m.activeTab]),
+			m.renderActiveTabBody(width, detailHeight),
+		}, "\n")
+	}
 }
 
 func (m *model) renderHeader() string {
@@ -371,7 +408,7 @@ func (m *model) renderBrowserPane(width, height int) string {
 		title += " [active]"
 	}
 
-	return paneStyle(width, height, m.focus == paneBrowser).Render(paneTitleStyle.Render(title) + "\n\n" + m.renderBrowserBody(maxInt(20, width-4)))
+	return paneStyle(width, height, m.focus == paneBrowser).Render(paneTitleStyle.Render(title) + "\n\n" + m.renderBrowserBody(maxInt(20, width-4), maxInt(1, height-4)))
 }
 
 func (m *model) renderDetailPane(width, height int) string {
@@ -738,21 +775,25 @@ func (m *model) renderFilterEditor() string {
 	return strings.Join(lines, "\n")
 }
 
-func (m *model) renderBrowserBody(width int) string {
+func (m *model) renderBrowserBody(width, height int) string {
+	if height <= 0 {
+		return ""
+	}
+
 	if m.isEmptyRepo() {
-		return strings.Join([]string{
+		return m.renderTextViewport(&m.browserViewport, maxInt(1, height), strings.Join([]string{
 			"No issues yet.",
 			"Create one with `tack create --title \"...\" --type task --priority medium`.",
 			"Or import a plan with `tack import --file plan.json`.",
-		}, "\n")
+		}, "\n"))
 	}
 
 	if len(m.summaries) == 0 {
-		return strings.Join([]string{
+		return m.renderTextViewport(&m.browserViewport, maxInt(1, height), strings.Join([]string{
 			"No matching issues.",
 			fmt.Sprintf("Current filters: %s", formatFilter(m.filter)),
 			"Press / to adjust filters or r to toggle ready/all.",
-		}, "\n")
+		}, "\n"))
 	}
 
 	indicatorWidth := 2
@@ -761,10 +802,30 @@ func (m *model) renderBrowserBody(width int) string {
 	typeWidth := 8
 	titleWidth := maxInt(12, width-(indicatorWidth+idWidth+statusWidth+typeWidth+4))
 
-	rows := make([]string, 0, len(m.summaries)+1)
-	rows = append(rows, tableHeaderStyle.Render(fmt.Sprintf("%-*s %-*s %-*s %-*s %s", indicatorWidth, "", idWidth, "ID", statusWidth, "STATUS", typeWidth, "TYPE", "TITLE")))
+	header := tableHeaderStyle.Render(fmt.Sprintf("%-*s %-*s %-*s %-*s %s", indicatorWidth, "", idWidth, "ID", statusWidth, "STATUS", typeWidth, "TYPE", "TITLE"))
+	if height == 1 {
+		return header
+	}
 
-	for i, summary := range m.summaries {
+	visibleRows := maxInt(1, height-1)
+	maxY := maxInt(0, len(m.summaries)-visibleRows)
+	if m.selected < m.browserViewport.y {
+		m.browserViewport.y = m.selected
+	}
+
+	if m.selected >= m.browserViewport.y+visibleRows {
+		m.browserViewport.y = m.selected - visibleRows + 1
+	}
+
+	m.browserViewport.y = clampInt(m.browserViewport.y, 0, maxY)
+
+	end := clampInt(m.browserViewport.y+visibleRows, m.browserViewport.y, len(m.summaries))
+
+	rows := make([]string, 0, visibleRows+1)
+	rows = append(rows, header)
+
+	for i := m.browserViewport.y; i < end; i++ {
+		summary := m.summaries[i]
 		marker := "  "
 		if i == m.selected {
 			marker = "> "
@@ -1138,6 +1199,19 @@ func maxInt(a, b int) int {
 	}
 
 	return b
+}
+
+func renderedHeight(parts ...string) int {
+	total := 0
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+
+		total += lipgloss.Height(part)
+	}
+
+	return total
 }
 
 var (

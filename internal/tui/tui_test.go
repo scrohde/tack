@@ -4,8 +4,11 @@ import (
 	"context"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+
+	"charm.land/lipgloss/v2"
 
 	"tack/internal/issues"
 	"tack/internal/store"
@@ -607,6 +610,45 @@ func TestDetailPaneScrollsLongDescriptionsWhenFocused(t *testing.T) {
 	}
 }
 
+func TestBrowserPaneScrollsLongIssueLists(t *testing.T) {
+	t.Parallel()
+
+	summaries := make([]issues.IssueSummary, 0, 8)
+	details := make(map[string]issues.IssueDetailView, 8)
+	focused := make(map[string]issues.FocusedGraphView, 8)
+
+	for i := 1; i <= 8; i++ {
+		id := "tk-" + strconv.Itoa(i)
+		summary := issues.IssueSummary{ID: id, Title: "issue " + id, Status: issues.StatusOpen, Type: issues.TypeTask}
+		summaries = append(summaries, summary)
+		details[id] = issues.IssueDetailView{Issue: issues.Issue{ID: id, Title: "issue " + id, Status: issues.StatusOpen}}
+		focused[id] = issues.FocusedGraphView{SelectedID: id, NodeSummaries: map[string]issues.IssueSummary{id: summary}}
+	}
+
+	reader := &fakeReader{
+		allSummaries: summaries,
+		details:      details,
+		focused:      focused,
+		project:      issues.ProjectGraphView{Issues: summaries},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.selected = 6
+
+	rendered := ansiPattern.ReplaceAllString(m.renderBrowserBody(80, 4), "")
+	if !strings.Contains(rendered, "ID") || !strings.Contains(rendered, "tk-7") {
+		t.Fatalf("expected browser viewport to keep the header and selected row visible, got:\n%s", rendered)
+	}
+
+	if strings.Contains(rendered, "tk-1") || strings.Contains(rendered, "tk-2") {
+		t.Fatalf("expected browser viewport to scroll past the earliest rows, got:\n%s", rendered)
+	}
+}
+
 func TestEmptyAndCompactStatesRenderIntentionally(t *testing.T) {
 	t.Parallel()
 
@@ -619,7 +661,7 @@ func TestEmptyAndCompactStatesRenderIntentionally(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	browser := emptyModel.renderBrowserBody(80)
+	browser := emptyModel.renderBrowserBody(80, 8)
 	if !strings.Contains(browser, "No issues yet.") || !strings.Contains(browser, "tack create") || !strings.Contains(browser, "tack import") {
 		t.Fatalf("unexpected empty repo browser state:\n%s", browser)
 	}
@@ -640,7 +682,7 @@ func TestEmptyAndCompactStatesRenderIntentionally(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	filteredBrowser := filteredModel.renderBrowserBody(80)
+	filteredBrowser := filteredModel.renderBrowserBody(80, 8)
 	if !strings.Contains(filteredBrowser, "No matching issues.") || !strings.Contains(filteredBrowser, "status=blocked") {
 		t.Fatalf("unexpected filtered empty state:\n%s", filteredBrowser)
 	}
@@ -651,6 +693,47 @@ func TestEmptyAndCompactStatesRenderIntentionally(t *testing.T) {
 	compact := filteredModel.render()
 	if !strings.Contains(compact, "Compact single-column layout") || !strings.Contains(compact, "Issues") || !strings.Contains(compact, "Details") {
 		t.Fatalf("unexpected compact layout:\n%s", compact)
+	}
+}
+
+func TestRenderReservesSpaceForFooterAndHelp(t *testing.T) {
+	t.Parallel()
+
+	summaries := make([]issues.IssueSummary, 0, 16)
+	details := make(map[string]issues.IssueDetailView, 16)
+	focused := make(map[string]issues.FocusedGraphView, 16)
+
+	for i := 1; i <= 16; i++ {
+		id := "tk-" + strconv.Itoa(i)
+		summary := issues.IssueSummary{ID: id, Title: "issue " + id, Status: issues.StatusOpen, Type: issues.TypeTask}
+		summaries = append(summaries, summary)
+		details[id] = issues.IssueDetailView{Issue: issues.Issue{ID: id, Title: "issue " + id, Status: issues.StatusOpen}}
+		focused[id] = issues.FocusedGraphView{SelectedID: id, NodeSummaries: map[string]issues.IssueSummary{id: summary}}
+	}
+
+	reader := &fakeReader{
+		allSummaries: summaries,
+		details:      details,
+		focused:      focused,
+		project:      issues.ProjectGraphView{Issues: summaries},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.width = 120
+	m.height = 18
+	m.showHelp = true
+
+	rendered := ansiPattern.ReplaceAllString(m.render(), "")
+	if got := lipgloss.Height(rendered); got > m.height {
+		t.Fatalf("expected render height to stay within the viewport, got %d lines for a %d-line terminal:\n%s", got, m.height, rendered)
+	}
+
+	if !strings.Contains(rendered, "q quit") || !strings.Contains(rendered, "Controls") {
+		t.Fatalf("expected footer and help to remain visible, got:\n%s", rendered)
 	}
 }
 
