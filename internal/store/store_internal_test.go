@@ -117,7 +117,7 @@ func TestConcurrentOpenersWaitForLockAndReadSuccessfully(t *testing.T) {
 	start := make(chan struct{})
 	errCh := make(chan error, readers)
 
-	for i := 0; i < readers; i++ {
+	for range readers {
 		go func() {
 			<-start
 
@@ -140,7 +140,7 @@ func TestConcurrentOpenersWaitForLockAndReadSuccessfully(t *testing.T) {
 
 	transactionOpen = false
 
-	for i := 0; i < readers; i++ {
+	for range readers {
 		select {
 		case err := <-errCh:
 			if err != nil {

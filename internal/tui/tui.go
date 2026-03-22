@@ -244,6 +244,7 @@ func (m *model) View() tea.View {
 func (m *model) render() string {
 	header := headerStyle.Render(m.renderHeader())
 	footer := footerStyle.Render(m.renderFooter())
+
 	help := ""
 	if m.showHelp {
 		help = helpStyle.Render(m.renderExpandedHelp())
@@ -808,6 +809,7 @@ func (m *model) renderBrowserBody(width, height int) string {
 	}
 
 	visibleRows := maxInt(1, height-1)
+
 	maxY := maxInt(0, len(m.summaries)-visibleRows)
 	if m.selected < m.browserViewport.y {
 		m.browserViewport.y = m.selected
@@ -826,6 +828,7 @@ func (m *model) renderBrowserBody(width, height int) string {
 
 	for i := m.browserViewport.y; i < end; i++ {
 		summary := m.summaries[i]
+
 		marker := "  "
 		if i == m.selected {
 			marker = "> "
@@ -1042,7 +1045,7 @@ func parseFilterInput(current store.ListFilter, input string) (store.ListFilter,
 
 	next := current
 
-	for _, token := range strings.Fields(trimmed) {
+	for token := range strings.FieldsSeq(trimmed) {
 		key, value, ok := strings.Cut(token, "=")
 		if !ok {
 			return store.ListFilter{}, fmt.Errorf("invalid filter token %q", token)
@@ -1203,6 +1206,7 @@ func maxInt(a, b int) int {
 
 func renderedHeight(parts ...string) int {
 	total := 0
+
 	for _, part := range parts {
 		if part == "" {
 			continue

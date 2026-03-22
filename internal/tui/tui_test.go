@@ -376,6 +376,7 @@ func TestGraphTabsKeepHorizontalPanningOnHAndLOnly(t *testing.T) {
 	m.activeTab = tabFocusedGraph
 
 	m.handleKey("l")
+
 	if m.focusedGraphViewport.x == 0 {
 		t.Fatalf("expected l to pan the focused graph horizontally, got %#v", m.focusedGraphViewport)
 	}

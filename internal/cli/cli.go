@@ -1369,7 +1369,7 @@ func formatLinkEndpointIDs(links []issues.Link, source bool) string {
 }
 
 func appendIndentedBlock(lines []string, prefix, body string) []string {
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		lines = append(lines, prefix+line)
 	}
 

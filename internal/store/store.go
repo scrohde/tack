@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -2229,10 +2230,8 @@ func normalizeImportManifest(manifest ImportManifest) ([]normalizedImportIssue, 
 		}
 
 		dependsOn := normalizeImportAliases(issue.DependsOn)
-		for _, blockerAlias := range dependsOn {
-			if blockerAlias == alias {
-				return nil, fmt.Errorf("issue %q cannot depend on itself", alias)
-			}
+		if slices.Contains(dependsOn, alias) {
+			return nil, fmt.Errorf("issue %q cannot depend on itself", alias)
 		}
 
 		aliases[alias] = struct{}{}

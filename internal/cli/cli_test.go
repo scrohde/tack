@@ -799,7 +799,7 @@ func runCLIError(t *testing.T, repo string, args ...string) error {
 	return err
 }
 
-func runCLIBytes(repo string, args ...string) ([]byte, error) {
+func runCLIBytes(_ string, args ...string) ([]byte, error) {
 	var stdout, stderr bytes.Buffer
 
 	err := cli.Execute(context.Background(), args, &stdout, &stderr)
