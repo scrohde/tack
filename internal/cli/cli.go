@@ -24,6 +24,11 @@ type App struct {
 	stderr io.Writer
 }
 
+type (
+	commandHandler    func([]string) error
+	subcommandHandler func([]string) error
+)
+
 const (
 	usageSkillInstall = "usage: tack skill install [--home|--path <dir>] [--json]"
 	usageImport       = "usage: tack import --file <path> [--json]"
@@ -71,50 +76,49 @@ func (a *App) execute(ctx context.Context, args []string) error {
 		return nil
 	}
 
-	switch args[0] {
-	case "init":
-		return a.runInit(args[1:])
-	case "create":
-		return a.runCreate(ctx, args[1:])
-	case "import":
-		return a.runImport(ctx, args[1:])
-	case "show":
-		return a.runShow(ctx, args[1:])
-	case "tui":
-		return a.runTUI(ctx, args[1:])
-	case "list":
-		return a.runList(ctx, args[1:])
-	case "ready":
-		return a.runReady(ctx, args[1:])
-	case "update":
-		return a.runUpdate(ctx, args[1:])
-	case "edit":
-		return a.runEdit(ctx, args[1:])
-	case "close":
-		return a.runClose(ctx, args[1:])
-	case "reopen":
-		return a.runReopen(ctx, args[1:])
-	case "comment":
-		return a.runComment(ctx, args[1:])
-	case "dep":
-		return a.runDep(ctx, args[1:])
-	case "skill":
-		return a.runSkill(args[1:])
-	case "labels":
-		return a.runLabels(ctx, args[1:])
-	case "export":
-		return a.runExport(ctx, args[1:])
-	case "-h", "--help":
+	if isHelpToken(args[0]) {
 		err := a.printUsage()
 		if err != nil {
 			return err
 		}
 
 		return nil
-	case "help":
+	}
+
+	if args[0] == "help" {
 		return a.runHelp(ctx, args[1:])
-	default:
+	}
+
+	handler, ok := a.commandHandlers(ctx)[args[0]]
+	if !ok {
 		return fmt.Errorf("unknown command %q", args[0])
+	}
+
+	return handler(args[1:])
+}
+
+func (a *App) commandHandlers(ctx context.Context) map[string]commandHandler {
+	return map[string]commandHandler{
+		"init":   a.runInit,
+		"create": func(args []string) error { return a.runCreate(ctx, args) },
+		"import": func(args []string) error { return a.runImport(ctx, args) },
+		"show":   func(args []string) error { return a.runShow(ctx, args) },
+		"tui":    func(args []string) error { return a.runTUI(ctx, args) },
+		"list":   func(args []string) error { return a.runList(ctx, args) },
+		"ready":  func(args []string) error { return a.runReady(ctx, args) },
+		"update": func(args []string) error { return a.runUpdate(ctx, args) },
+		"edit":   func(args []string) error { return a.runEdit(ctx, args) },
+		"close":  func(args []string) error { return a.runClose(ctx, args) },
+		"reopen": func(args []string) error { return a.runReopen(ctx, args) },
+		"comment": func(args []string) error {
+			return a.runComment(ctx, args)
+		},
+		"dep":   func(args []string) error { return a.runDep(ctx, args) },
+		"skill": a.runSkill,
+		"labels": func(args []string) error {
+			return a.runLabels(ctx, args)
+		},
+		"export": func(args []string) error { return a.runExport(ctx, args) },
 	}
 }
 
@@ -174,7 +178,7 @@ func (a *App) runCreate(ctx context.Context, args []string) error {
 	bodyFile := fs.String("body-file", "", "path to description body")
 	parent := fs.String("parent", "", "parent issue id")
 	jsonOut := fs.Bool("json", false, "output JSON")
-	actorFlag := fs.String("actor", "", "actor override")
+	actorFlag := addActorFlag(fs)
 
 	var (
 		dependsOn multiFlag
@@ -211,7 +215,7 @@ func (a *App) runCreate(ctx context.Context, args []string) error {
 		}
 	}
 
-	actor, err := issues.ResolveActor(repoRoot, *actorFlag)
+	actor, err := resolveActor(repoRoot, actorFlag)
 	if err != nil {
 		return err
 	}
@@ -239,20 +243,9 @@ func (a *App) runCreate(ctx context.Context, args []string) error {
 }
 
 func (a *App) runSkill(args []string) error {
-	if len(args) == 0 {
-		return errors.New(usageSkillInstall)
-	}
-
-	if isHelpToken(args[0]) {
-		return a.printCommandUsage(a.stdout, usageSkillInstall, nil)
-	}
-
-	switch args[0] {
-	case "install":
-		return a.runSkillInstall(args[1:])
-	default:
-		return fmt.Errorf("unknown skill command %q", args[0])
-	}
+	return a.runSubcommand(args, usageSkillInstall, "unknown skill command %q", map[string]subcommandHandler{
+		"install": a.runSkillInstall,
+	})
 }
 
 func (a *App) runSkillInstall(args []string) error {
@@ -328,7 +321,7 @@ func (a *App) runImport(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("import", flag.ContinueOnError)
 	filePath := fs.String("file", "", "path to JSON manifest")
 	jsonOut := fs.Bool("json", false, "output JSON")
-	actorFlag := fs.String("actor", "", "actor override")
+	actorFlag := addActorFlag(fs)
 
 	err := a.parseFlags(fs, args, usageImport)
 	if err != nil {
@@ -354,7 +347,7 @@ func (a *App) runImport(ctx context.Context, args []string) error {
 	}
 	defer closeStore(s)
 
-	actor, err := issues.ResolveActor(repoRoot, *actorFlag)
+	actor, err := resolveActor(repoRoot, actorFlag)
 	if err != nil {
 		return err
 	}
@@ -372,25 +365,23 @@ func (a *App) runImport(ctx context.Context, args []string) error {
 }
 
 func (a *App) runShow(ctx context.Context, args []string) error {
-	if len(args) > 0 && isHelpToken(args[0]) {
-		return a.printCommandUsage(a.stdout, usageShow, nil)
-	}
-
-	if len(args) == 0 {
-		return errors.New(usageShow)
-	}
-
-	id := args[0]
-	fs := flag.NewFlagSet("show", flag.ContinueOnError)
-	jsonOut := fs.Bool("json", false, "output JSON")
-
-	err := a.parseFlags(fs, args[1:], usageShow)
+	leading, remaining, err := a.parseLeadingArgs(args, usageShow, 1)
 	if err != nil {
 		return err
 	}
 
-	if fs.NArg() != 0 {
-		return errors.New(usageShow)
+	id := leading[0]
+	fs := flag.NewFlagSet("show", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "output JSON")
+
+	err = a.parseFlags(fs, remaining, usageShow)
+	if err != nil {
+		return err
+	}
+
+	err = requireNoExtraArgs(fs, usageShow)
+	if err != nil {
+		return err
 	}
 
 	_, s, err := openRepoStore()
@@ -514,15 +505,12 @@ func (a *App) runReady(ctx context.Context, args []string) error {
 }
 
 func (a *App) runUpdate(ctx context.Context, args []string) error {
-	if len(args) > 0 && isHelpToken(args[0]) {
-		return a.printCommandUsage(a.stdout, usageUpdate, nil)
+	leading, remaining, err := a.parseLeadingArgs(args, usageUpdate, 1)
+	if err != nil {
+		return err
 	}
 
-	if len(args) == 0 {
-		return errors.New(usageUpdate)
-	}
-
-	id := args[0]
+	id := leading[0]
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	title := &optionalString{}
 	description := &optionalString{}
@@ -534,7 +522,7 @@ func (a *App) runUpdate(ctx context.Context, args []string) error {
 	parent := &optionalString{}
 	claim := fs.Bool("claim", false, "claim issue for current actor")
 	jsonOut := fs.Bool("json", false, "output JSON")
-	actorFlag := fs.String("actor", "", "actor override")
+	actorFlag := addActorFlag(fs)
 	fs.Var(title, "title", "new title")
 	fs.Var(description, "description", "new description")
 	fs.Var(kind, "type", "new type")
@@ -543,13 +531,14 @@ func (a *App) runUpdate(ctx context.Context, args []string) error {
 	fs.Var(assignee, "assignee", "new assignee; empty clears")
 	fs.Var(parent, "parent", "new parent; empty clears")
 
-	err := a.parseFlags(fs, args[1:], usageUpdate)
+	err = a.parseFlags(fs, remaining, usageUpdate)
 	if err != nil {
 		return err
 	}
 
-	if fs.NArg() != 0 {
-		return errors.New(usageUpdate)
+	err = requireNoExtraArgs(fs, usageUpdate)
+	if err != nil {
+		return err
 	}
 
 	repoRoot, s, err := openRepoStore()
@@ -594,7 +583,7 @@ func (a *App) runUpdate(ctx context.Context, args []string) error {
 
 	actor := ""
 	if *claim || title.set || description.set || kind.set || status.set || priority.set || assignee.set || parent.set {
-		actor, err = issues.ResolveActor(repoRoot, *actorFlag)
+		actor, err = resolveActor(repoRoot, actorFlag)
 		if err != nil {
 			return err
 		}
@@ -613,27 +602,25 @@ func (a *App) runUpdate(ctx context.Context, args []string) error {
 }
 
 func (a *App) runEdit(ctx context.Context, args []string) error {
-	if len(args) > 0 && isHelpToken(args[0]) {
-		return a.printCommandUsage(a.stdout, usageEdit, nil)
-	}
-
-	if len(args) == 0 {
-		return errors.New(usageEdit)
-	}
-
-	id := args[0]
-	fs := flag.NewFlagSet("edit", flag.ContinueOnError)
-	jsonOut := fs.Bool("json", false, "output JSON")
-
-	actorFlag := fs.String("actor", "", "actor override")
-
-	err := a.parseFlags(fs, args[1:], usageEdit)
+	leading, remaining, err := a.parseLeadingArgs(args, usageEdit, 1)
 	if err != nil {
 		return err
 	}
 
-	if fs.NArg() != 0 {
-		return errors.New(usageEdit)
+	id := leading[0]
+	fs := flag.NewFlagSet("edit", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "output JSON")
+
+	actorFlag := addActorFlag(fs)
+
+	err = a.parseFlags(fs, remaining, usageEdit)
+	if err != nil {
+		return err
+	}
+
+	err = requireNoExtraArgs(fs, usageEdit)
+	if err != nil {
+		return err
 	}
 
 	repoRoot, s, err := openRepoStore()
@@ -647,7 +634,7 @@ func (a *App) runEdit(ctx context.Context, args []string) error {
 		return err
 	}
 
-	actor, err := issues.ResolveActor(repoRoot, *actorFlag)
+	actor, err := resolveActor(repoRoot, actorFlag)
 	if err != nil {
 		return err
 	}
@@ -709,28 +696,27 @@ func (a *App) runCloseLike(ctx context.Context, args []string, closeIssue bool) 
 	}
 
 	usage := fmt.Sprintf("usage: tack %s <id> [--reason ...]", name)
-	if len(args) > 0 && isHelpToken(args[0]) {
-		return a.printCommandUsage(a.stdout, usage, nil)
-	}
 
-	if len(args) == 0 {
-		return errors.New(usage)
-	}
-
-	id := args[0]
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	reason := fs.String("reason", "", "reason for transition")
-	jsonOut := fs.Bool("json", false, "output JSON")
-
-	actorFlag := fs.String("actor", "", "actor override")
-
-	err := a.parseFlags(fs, args[1:], usage)
+	leading, remaining, err := a.parseLeadingArgs(args, usage, 1)
 	if err != nil {
 		return err
 	}
 
-	if fs.NArg() != 0 {
-		return errors.New(usage)
+	id := leading[0]
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	reason := fs.String("reason", "", "reason for transition")
+	jsonOut := fs.Bool("json", false, "output JSON")
+
+	actorFlag := addActorFlag(fs)
+
+	err = a.parseFlags(fs, remaining, usage)
+	if err != nil {
+		return err
+	}
+
+	err = requireNoExtraArgs(fs, usage)
+	if err != nil {
+		return err
 	}
 
 	repoRoot, s, err := openRepoStore()
@@ -743,7 +729,7 @@ func (a *App) runCloseLike(ctx context.Context, args []string, closeIssue bool) 
 		return errors.New("--reason is required")
 	}
 
-	actor, err := issues.ResolveActor(repoRoot, *actorFlag)
+	actor, err := resolveActor(repoRoot, actorFlag)
 	if err != nil {
 		return err
 	}
@@ -767,48 +753,34 @@ func (a *App) runCloseLike(ctx context.Context, args []string, closeIssue bool) 
 }
 
 func (a *App) runComment(ctx context.Context, args []string) error {
-	if len(args) == 0 {
-		return errors.New(usageComment)
-	}
-
-	if isHelpToken(args[0]) {
-		return a.printCommandUsage(a.stdout, usageComment, nil)
-	}
-
-	switch args[0] {
-	case "add":
-		return a.runCommentAdd(ctx, args[1:])
-	case "list":
-		return a.runCommentList(ctx, args[1:])
-	default:
-		return fmt.Errorf("unknown comment command %q", args[0])
-	}
+	return a.runSubcommand(args, usageComment, "unknown comment command %q", map[string]subcommandHandler{
+		"add":  func(args []string) error { return a.runCommentAdd(ctx, args) },
+		"list": func(args []string) error { return a.runCommentList(ctx, args) },
+	})
 }
 
 func (a *App) runCommentAdd(ctx context.Context, args []string) error {
-	if len(args) > 0 && isHelpToken(args[0]) {
-		return a.printCommandUsage(a.stdout, usageCommentAdd, nil)
+	leading, remaining, err := a.parseLeadingArgs(args, usageCommentAdd, 1)
+	if err != nil {
+		return err
 	}
 
-	if len(args) == 0 {
-		return errors.New(usageCommentAdd)
-	}
-
-	id := args[0]
+	id := leading[0]
 	fs := flag.NewFlagSet("comment add", flag.ContinueOnError)
 	body := fs.String("body", "", "comment body")
 	bodyFile := fs.String("body-file", "", "path to comment body")
 	jsonOut := fs.Bool("json", false, "output JSON")
 
-	actorFlag := fs.String("actor", "", "actor override")
+	actorFlag := addActorFlag(fs)
 
-	err := a.parseFlags(fs, args[1:], usageCommentAdd)
+	err = a.parseFlags(fs, remaining, usageCommentAdd)
 	if err != nil {
 		return err
 	}
 
-	if fs.NArg() != 0 {
-		return errors.New(usageCommentAdd)
+	err = requireNoExtraArgs(fs, usageCommentAdd)
+	if err != nil {
+		return err
 	}
 
 	repoRoot, s, err := openRepoStore()
@@ -829,7 +801,7 @@ func (a *App) runCommentAdd(ctx context.Context, args []string) error {
 		}
 	}
 
-	actor, err := issues.ResolveActor(repoRoot, *actorFlag)
+	actor, err := resolveActor(repoRoot, actorFlag)
 	if err != nil {
 		return err
 	}
@@ -849,25 +821,23 @@ func (a *App) runCommentAdd(ctx context.Context, args []string) error {
 }
 
 func (a *App) runCommentList(ctx context.Context, args []string) error {
-	if len(args) > 0 && isHelpToken(args[0]) {
-		return a.printCommandUsage(a.stdout, usageCommentList, nil)
-	}
-
-	if len(args) == 0 {
-		return errors.New(usageCommentList)
-	}
-
-	id := args[0]
-	fs := flag.NewFlagSet("comment list", flag.ContinueOnError)
-	jsonOut := fs.Bool("json", false, "output JSON")
-
-	err := a.parseFlags(fs, args[1:], usageCommentList)
+	leading, remaining, err := a.parseLeadingArgs(args, usageCommentList, 1)
 	if err != nil {
 		return err
 	}
 
-	if fs.NArg() != 0 {
-		return errors.New(usageCommentList)
+	id := leading[0]
+	fs := flag.NewFlagSet("comment list", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "output JSON")
+
+	err = a.parseFlags(fs, remaining, usageCommentList)
+	if err != nil {
+		return err
+	}
+
+	err = requireNoExtraArgs(fs, usageCommentList)
+	if err != nil {
+		return err
 	}
 
 	_, s, err := openRepoStore()
@@ -896,48 +866,33 @@ func (a *App) runCommentList(ctx context.Context, args []string) error {
 }
 
 func (a *App) runDep(ctx context.Context, args []string) error {
-	if len(args) == 0 {
-		return errors.New(usageDep)
-	}
-
-	if isHelpToken(args[0]) {
-		return a.printCommandUsage(a.stdout, usageDep, nil)
-	}
-
-	switch args[0] {
-	case "add":
-		return a.runDepAdd(ctx, args[1:])
-	case "remove":
-		return a.runDepRemove(ctx, args[1:])
-	case "list":
-		return a.runDepList(ctx, args[1:])
-	default:
-		return fmt.Errorf("unknown dep command %q", args[0])
-	}
+	return a.runSubcommand(args, usageDep, "unknown dep command %q", map[string]subcommandHandler{
+		"add":    func(args []string) error { return a.runDepAdd(ctx, args) },
+		"remove": func(args []string) error { return a.runDepRemove(ctx, args) },
+		"list":   func(args []string) error { return a.runDepList(ctx, args) },
+	})
 }
 
 func (a *App) runDepAdd(ctx context.Context, args []string) error {
-	if len(args) > 0 && isHelpToken(args[0]) {
-		return a.printCommandUsage(a.stdout, usageDepAdd, nil)
-	}
-
-	if len(args) < 2 {
-		return errors.New(usageDepAdd)
-	}
-
-	blockedID, blockerID := args[0], args[1]
-	fs := flag.NewFlagSet("dep add", flag.ContinueOnError)
-	jsonOut := fs.Bool("json", false, "output JSON")
-
-	actorFlag := fs.String("actor", "", "actor override")
-
-	err := a.parseFlags(fs, args[2:], usageDepAdd)
+	leading, remaining, err := a.parseLeadingArgs(args, usageDepAdd, 2)
 	if err != nil {
 		return err
 	}
 
-	if fs.NArg() != 0 {
-		return errors.New(usageDepAdd)
+	blockedID, blockerID := leading[0], leading[1]
+	fs := flag.NewFlagSet("dep add", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "output JSON")
+
+	actorFlag := addActorFlag(fs)
+
+	err = a.parseFlags(fs, remaining, usageDepAdd)
+	if err != nil {
+		return err
+	}
+
+	err = requireNoExtraArgs(fs, usageDepAdd)
+	if err != nil {
+		return err
 	}
 
 	repoRoot, s, err := openRepoStore()
@@ -946,7 +901,7 @@ func (a *App) runDepAdd(ctx context.Context, args []string) error {
 	}
 	defer closeStore(s)
 
-	actor, err := issues.ResolveActor(repoRoot, *actorFlag)
+	actor, err := resolveActor(repoRoot, actorFlag)
 	if err != nil {
 		return err
 	}
@@ -966,25 +921,23 @@ func (a *App) runDepAdd(ctx context.Context, args []string) error {
 }
 
 func (a *App) runDepRemove(ctx context.Context, args []string) error {
-	if len(args) > 0 && isHelpToken(args[0]) {
-		return a.printCommandUsage(a.stdout, usageDepRemove, nil)
-	}
-
-	if len(args) < 2 {
-		return errors.New(usageDepRemove)
-	}
-
-	blockedID, blockerID := args[0], args[1]
-	fs := flag.NewFlagSet("dep remove", flag.ContinueOnError)
-	actorFlag := fs.String("actor", "", "actor override")
-
-	err := a.parseFlags(fs, args[2:], usageDepRemove)
+	leading, remaining, err := a.parseLeadingArgs(args, usageDepRemove, 2)
 	if err != nil {
 		return err
 	}
 
-	if fs.NArg() != 0 {
-		return errors.New(usageDepRemove)
+	blockedID, blockerID := leading[0], leading[1]
+	fs := flag.NewFlagSet("dep remove", flag.ContinueOnError)
+	actorFlag := addActorFlag(fs)
+
+	err = a.parseFlags(fs, remaining, usageDepRemove)
+	if err != nil {
+		return err
+	}
+
+	err = requireNoExtraArgs(fs, usageDepRemove)
+	if err != nil {
+		return err
 	}
 
 	repoRoot, s, err := openRepoStore()
@@ -993,7 +946,7 @@ func (a *App) runDepRemove(ctx context.Context, args []string) error {
 	}
 	defer closeStore(s)
 
-	actor, err := issues.ResolveActor(repoRoot, *actorFlag)
+	actor, err := resolveActor(repoRoot, actorFlag)
 	if err != nil {
 		return err
 	}
@@ -1009,25 +962,23 @@ func (a *App) runDepRemove(ctx context.Context, args []string) error {
 }
 
 func (a *App) runDepList(ctx context.Context, args []string) error {
-	if len(args) > 0 && isHelpToken(args[0]) {
-		return a.printCommandUsage(a.stdout, usageDepList, nil)
-	}
-
-	if len(args) == 0 {
-		return errors.New(usageDepList)
-	}
-
-	id := args[0]
-	fs := flag.NewFlagSet("dep list", flag.ContinueOnError)
-	jsonOut := fs.Bool("json", false, "output JSON")
-
-	err := a.parseFlags(fs, args[1:], usageDepList)
+	leading, remaining, err := a.parseLeadingArgs(args, usageDepList, 1)
 	if err != nil {
 		return err
 	}
 
-	if fs.NArg() != 0 {
-		return errors.New(usageDepList)
+	id := leading[0]
+	fs := flag.NewFlagSet("dep list", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "output JSON")
+
+	err = a.parseFlags(fs, remaining, usageDepList)
+	if err != nil {
+		return err
+	}
+
+	err = requireNoExtraArgs(fs, usageDepList)
+	if err != nil {
+		return err
 	}
 
 	_, s, err := openRepoStore()
@@ -1051,42 +1002,26 @@ func (a *App) runDepList(ctx context.Context, args []string) error {
 }
 
 func (a *App) runLabels(ctx context.Context, args []string) error {
-	if len(args) == 0 {
-		return errors.New(usageLabels)
-	}
-
-	if isHelpToken(args[0]) {
-		return a.printCommandUsage(a.stdout, usageLabels, nil)
-	}
-
-	switch args[0] {
-	case "add":
-		return a.runLabelsAdd(ctx, args[1:])
-	case "remove":
-		return a.runLabelsRemove(ctx, args[1:])
-	case "list":
-		return a.runLabelsList(ctx, args[1:])
-	default:
-		return fmt.Errorf("unknown labels command %q", args[0])
-	}
+	return a.runSubcommand(args, usageLabels, "unknown labels command %q", map[string]subcommandHandler{
+		"add":    func(args []string) error { return a.runLabelsAdd(ctx, args) },
+		"remove": func(args []string) error { return a.runLabelsRemove(ctx, args) },
+		"list":   func(args []string) error { return a.runLabelsList(ctx, args) },
+	})
 }
 
 func (a *App) runLabelsAdd(ctx context.Context, args []string) error {
-	if len(args) > 0 && isHelpToken(args[0]) {
-		return a.printCommandUsage(a.stdout, usageLabelsAdd, nil)
+	leading, remaining, err := a.parseLeadingArgs(args, usageLabelsAdd, 1)
+	if err != nil {
+		return err
 	}
 
-	if len(args) == 0 {
-		return errors.New(usageLabelsAdd)
-	}
-
-	id := args[0]
+	id := leading[0]
 	fs := flag.NewFlagSet("labels add", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "output JSON")
 
-	actorFlag := fs.String("actor", "", "actor override")
+	actorFlag := addActorFlag(fs)
 
-	err := a.parseFlags(fs, args[1:], usageLabelsAdd)
+	err = a.parseFlags(fs, remaining, usageLabelsAdd)
 	if err != nil {
 		return err
 	}
@@ -1103,7 +1038,7 @@ func (a *App) runLabelsAdd(ctx context.Context, args []string) error {
 
 	labelsToAdd := fs.Args()
 
-	actor, err := issues.ResolveActor(repoRoot, *actorFlag)
+	actor, err := resolveActor(repoRoot, actorFlag)
 	if err != nil {
 		return err
 	}
@@ -1123,21 +1058,18 @@ func (a *App) runLabelsAdd(ctx context.Context, args []string) error {
 }
 
 func (a *App) runLabelsRemove(ctx context.Context, args []string) error {
-	if len(args) > 0 && isHelpToken(args[0]) {
-		return a.printCommandUsage(a.stdout, usageLabelsRemove, nil)
+	leading, remaining, err := a.parseLeadingArgs(args, usageLabelsRemove, 1)
+	if err != nil {
+		return err
 	}
 
-	if len(args) == 0 {
-		return errors.New(usageLabelsRemove)
-	}
-
-	id := args[0]
+	id := leading[0]
 	fs := flag.NewFlagSet("labels remove", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "output JSON")
 
-	actorFlag := fs.String("actor", "", "actor override")
+	actorFlag := addActorFlag(fs)
 
-	err := a.parseFlags(fs, args[1:], usageLabelsRemove)
+	err = a.parseFlags(fs, remaining, usageLabelsRemove)
 	if err != nil {
 		return err
 	}
@@ -1154,7 +1086,7 @@ func (a *App) runLabelsRemove(ctx context.Context, args []string) error {
 
 	labelsToRemove := fs.Args()
 
-	actor, err := issues.ResolveActor(repoRoot, *actorFlag)
+	actor, err := resolveActor(repoRoot, actorFlag)
 	if err != nil {
 		return err
 	}
@@ -1174,25 +1106,23 @@ func (a *App) runLabelsRemove(ctx context.Context, args []string) error {
 }
 
 func (a *App) runLabelsList(ctx context.Context, args []string) error {
-	if len(args) > 0 && isHelpToken(args[0]) {
-		return a.printCommandUsage(a.stdout, usageLabelsList, nil)
-	}
-
-	if len(args) == 0 {
-		return errors.New(usageLabelsList)
-	}
-
-	id := args[0]
-	fs := flag.NewFlagSet("labels list", flag.ContinueOnError)
-	jsonOut := fs.Bool("json", false, "output JSON")
-
-	err := a.parseFlags(fs, args[1:], usageLabelsList)
+	leading, remaining, err := a.parseLeadingArgs(args, usageLabelsList, 1)
 	if err != nil {
 		return err
 	}
 
-	if fs.NArg() != 0 {
-		return errors.New(usageLabelsList)
+	id := leading[0]
+	fs := flag.NewFlagSet("labels list", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "output JSON")
+
+	err = a.parseFlags(fs, remaining, usageLabelsList)
+	if err != nil {
+		return err
+	}
+
+	err = requireNoExtraArgs(fs, usageLabelsList)
+	if err != nil {
+		return err
 	}
 
 	_, s, err := openRepoStore()
@@ -1472,44 +1402,14 @@ func (a *App) runHelp(ctx context.Context, args []string) error {
 		return a.printUsage()
 	}
 
-	withHelp := append(args[1:], "--help")
-
-	switch args[0] {
-	case "init":
-		return a.runInit(withHelp)
-	case "create":
-		return a.runCreate(ctx, withHelp)
-	case "import":
-		return a.runImport(ctx, withHelp)
-	case "show":
-		return a.runShow(ctx, withHelp)
-	case "tui":
-		return a.runTUI(ctx, withHelp)
-	case "list":
-		return a.runList(ctx, withHelp)
-	case "ready":
-		return a.runReady(ctx, withHelp)
-	case "update":
-		return a.runUpdate(ctx, withHelp)
-	case "edit":
-		return a.runEdit(ctx, withHelp)
-	case "close":
-		return a.runClose(ctx, withHelp)
-	case "reopen":
-		return a.runReopen(ctx, withHelp)
-	case "comment":
-		return a.runComment(ctx, withHelp)
-	case "dep":
-		return a.runDep(ctx, withHelp)
-	case "skill":
-		return a.runSkill(withHelp)
-	case "labels":
-		return a.runLabels(ctx, withHelp)
-	case "export":
-		return a.runExport(ctx, withHelp)
-	default:
+	handler, ok := a.commandHandlers(ctx)[args[0]]
+	if !ok {
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+
+	withHelp := append(args[1:], "--help")
+
+	return handler(withHelp)
 }
 
 func (a *App) parseFlags(fs *flag.FlagSet, args []string, usage string) error {
@@ -1517,6 +1417,12 @@ func (a *App) parseFlags(fs *flag.FlagSet, args []string, usage string) error {
 }
 
 func parseFlagSet(fs *flag.FlagSet, helpOutput io.Writer, args []string, usage string) error {
+	return parseFlagSetWithHelp(fs, helpOutput, args, func(out io.Writer, flags *flag.FlagSet) error {
+		return printFlagUsage(out, usage, flags)
+	})
+}
+
+func parseFlagSetWithHelp(fs *flag.FlagSet, helpOutput io.Writer, args []string, onHelp func(io.Writer, *flag.FlagSet) error) error {
 	fs.SetOutput(io.Discard)
 	fs.Usage = func() {}
 
@@ -1526,7 +1432,7 @@ func parseFlagSet(fs *flag.FlagSet, helpOutput io.Writer, args []string, usage s
 	}
 
 	if errors.Is(err, flag.ErrHelp) {
-		usageErr := printFlagUsage(helpOutput, usage, fs)
+		usageErr := onHelp(helpOutput, fs)
 		if usageErr != nil {
 			return usageErr
 		}
@@ -1545,6 +1451,43 @@ func printFlagUsage(w io.Writer, usage string, fs *flag.FlagSet) error {
 
 func (a *App) printCommandUsage(w io.Writer, usage string, defaults func(io.Writer) error) error {
 	return printUsageWithDefaults(w, usage, defaults)
+}
+
+func (a *App) parseLeadingArgs(args []string, usage string, required int) ([]string, []string, error) {
+	if len(args) > 0 && isHelpToken(args[0]) {
+		err := a.printCommandUsage(a.stdout, usage, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		return nil, nil, flag.ErrHelp
+	}
+
+	if len(args) < required {
+		return nil, nil, errors.New(usage)
+	}
+
+	leading := make([]string, required)
+	copy(leading, args[:required])
+
+	return leading, args[required:], nil
+}
+
+func (a *App) runSubcommand(args []string, usage, unknownFormat string, handlers map[string]subcommandHandler) error {
+	if len(args) == 0 {
+		return errors.New(usage)
+	}
+
+	if isHelpToken(args[0]) {
+		return a.printCommandUsage(a.stdout, usage, nil)
+	}
+
+	handler, ok := handlers[args[0]]
+	if !ok {
+		return fmt.Errorf(unknownFormat, args[0])
+	}
+
+	return handler(args[1:])
 }
 
 func printUsageWithDefaults(w io.Writer, usage string, defaults func(io.Writer) error) error {
@@ -1566,24 +1509,7 @@ func printUsageWithDefaults(w io.Writer, usage string, defaults func(io.Writer) 
 }
 
 func parseTUIFlagSet(fs *flag.FlagSet, helpOutput io.Writer, args []string) error {
-	fs.SetOutput(io.Discard)
-	fs.Usage = func() {}
-
-	err := fs.Parse(args)
-	if err == nil {
-		return nil
-	}
-
-	if errors.Is(err, flag.ErrHelp) {
-		usageErr := printTUIUsage(helpOutput, fs)
-		if usageErr != nil {
-			return usageErr
-		}
-
-		return flag.ErrHelp
-	}
-
-	return err
+	return parseFlagSetWithHelp(fs, helpOutput, args, printTUIUsage)
 }
 
 func printTUIUsage(w io.Writer, fs *flag.FlagSet) error {
@@ -1665,6 +1591,26 @@ func readImportManifest(path string) (_ store.ImportManifest, err error) {
 
 func isHelpToken(arg string) bool {
 	return arg == "-h" || arg == "--help"
+}
+
+func addActorFlag(fs *flag.FlagSet) *string {
+	return fs.String("actor", "", "actor override")
+}
+
+func resolveActor(repoRoot string, actorFlag *string) (string, error) {
+	if actorFlag == nil {
+		return issues.ResolveActor(repoRoot, "")
+	}
+
+	return issues.ResolveActor(repoRoot, *actorFlag)
+}
+
+func requireNoExtraArgs(fs *flag.FlagSet, usage string) error {
+	if fs.NArg() != 0 {
+		return errors.New(usage)
+	}
+
+	return nil
 }
 
 func closeStore(s *store.Store) {

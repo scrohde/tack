@@ -370,6 +370,18 @@ func TestHelpCommandMatchesFlagHelp(t *testing.T) {
 			want:    "usage: tack list [flags]",
 		},
 		{
+			name:    "init",
+			direct:  []string{"init", "--help"},
+			viaHelp: []string{"help", "init"},
+			want:    "usage: tack init [--json]",
+		},
+		{
+			name:    "create",
+			direct:  []string{"create", "--help"},
+			viaHelp: []string{"help", "create"},
+			want:    "usage: tack create [flags]",
+		},
+		{
 			name:    "import",
 			direct:  []string{"import", "--help"},
 			viaHelp: []string{"help", "import"},
@@ -400,6 +412,24 @@ func TestHelpCommandMatchesFlagHelp(t *testing.T) {
 			want:    "usage: tack update <id> [flags]",
 		},
 		{
+			name:    "edit",
+			direct:  []string{"edit", "--help"},
+			viaHelp: []string{"help", "edit"},
+			want:    "usage: tack edit <id>",
+		},
+		{
+			name:    "close",
+			direct:  []string{"close", "--help"},
+			viaHelp: []string{"help", "close"},
+			want:    "usage: tack close <id> [--reason ...]",
+		},
+		{
+			name:    "reopen",
+			direct:  []string{"reopen", "--help"},
+			viaHelp: []string{"help", "reopen"},
+			want:    "usage: tack reopen <id> [--reason ...]",
+		},
+		{
 			name:    "comment group",
 			direct:  []string{"comment", "--help"},
 			viaHelp: []string{"help", "comment"},
@@ -424,6 +454,18 @@ func TestHelpCommandMatchesFlagHelp(t *testing.T) {
 			want:    "usage: tack dep add <blocked-id> <blocker-id>",
 		},
 		{
+			name:    "dep remove",
+			direct:  []string{"dep", "remove", "--help"},
+			viaHelp: []string{"help", "dep", "remove"},
+			want:    "usage: tack dep remove <blocked-id> <blocker-id>",
+		},
+		{
+			name:    "dep list",
+			direct:  []string{"dep", "list", "--help"},
+			viaHelp: []string{"help", "dep", "list"},
+			want:    "usage: tack dep list <id>",
+		},
+		{
 			name:    "labels group",
 			direct:  []string{"labels", "--help"},
 			viaHelp: []string{"help", "labels"},
@@ -436,10 +478,34 @@ func TestHelpCommandMatchesFlagHelp(t *testing.T) {
 			want:    "usage: tack labels add <id> <label> [label...]",
 		},
 		{
+			name:    "labels remove",
+			direct:  []string{"labels", "remove", "--help"},
+			viaHelp: []string{"help", "labels", "remove"},
+			want:    "usage: tack labels remove <id> <label> [label...]",
+		},
+		{
+			name:    "labels list",
+			direct:  []string{"labels", "list", "--help"},
+			viaHelp: []string{"help", "labels", "list"},
+			want:    "usage: tack labels list <id>",
+		},
+		{
+			name:    "comment list",
+			direct:  []string{"comment", "list", "--help"},
+			viaHelp: []string{"help", "comment", "list"},
+			want:    "usage: tack comment list <id>",
+		},
+		{
 			name:    "skill install",
 			direct:  []string{"skill", "install", "--help"},
 			viaHelp: []string{"help", "skill", "install"},
 			want:    "usage: tack skill install [--home|--path <dir>] [--json]",
+		},
+		{
+			name:    "export",
+			direct:  []string{"export", "--help"},
+			viaHelp: []string{"help", "export"},
+			want:    "usage: tack export [--json] [--jira <epic-id>]",
 		},
 	}
 
@@ -463,6 +529,137 @@ func TestHelpCommandMatchesFlagHelp(t *testing.T) {
 				t.Fatalf("expected help output to contain %q, got %q", tc.want, string(directOut))
 			}
 		})
+	}
+}
+
+func TestCommandsRequireExpectedPositionalArgs(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "show", args: []string{"show"}, want: "usage: tack show <id> [--json]"},
+		{name: "update", args: []string{"update"}, want: "usage: tack update <id> [flags]"},
+		{name: "edit", args: []string{"edit"}, want: "usage: tack edit <id>"},
+		{name: "close", args: []string{"close"}, want: "usage: tack close <id> [--reason ...]"},
+		{name: "reopen", args: []string{"reopen"}, want: "usage: tack reopen <id> [--reason ...]"},
+		{name: "comment add", args: []string{"comment", "add"}, want: "usage: tack comment add <id> [--body|--body-file]"},
+		{name: "comment list", args: []string{"comment", "list"}, want: "usage: tack comment list <id>"},
+		{name: "dep add", args: []string{"dep", "add"}, want: "usage: tack dep add <blocked-id> <blocker-id>"},
+		{name: "dep remove", args: []string{"dep", "remove"}, want: "usage: tack dep remove <blocked-id> <blocker-id>"},
+		{name: "dep list", args: []string{"dep", "list"}, want: "usage: tack dep list <id>"},
+		{name: "labels add missing id", args: []string{"labels", "add"}, want: "usage: tack labels add <id> <label> [label...]"},
+		{name: "labels add missing label", args: []string{"labels", "add", "tk-1"}, want: "usage: tack labels add <id> <label> [label...]"},
+		{name: "labels remove missing id", args: []string{"labels", "remove"}, want: "usage: tack labels remove <id> <label> [label...]"},
+		{name: "labels remove missing label", args: []string{"labels", "remove", "tk-1"}, want: "usage: tack labels remove <id> <label> [label...]"},
+		{name: "labels list", args: []string{"labels", "list"}, want: "usage: tack labels list <id>"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runCLIError(t, repo, tc.args...)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("expected %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestCommandsRejectUnexpectedExtraArgs(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+
+	manifestPath := writeManifest(t, repo, `{"issues":[]}`)
+
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "create", args: []string{"create", "extra"}, want: "usage: tack create [flags]"},
+		{name: "import", args: []string{"import", "--file", manifestPath, "extra"}, want: "usage: tack import --file <path> [--json]"},
+		{name: "show", args: []string{"show", "tk-1", "extra"}, want: "usage: tack show <id> [--json]"},
+		{name: "update", args: []string{"update", "tk-1", "extra"}, want: "usage: tack update <id> [flags]"},
+		{name: "comment list", args: []string{"comment", "list", "tk-1", "extra"}, want: "usage: tack comment list <id>"},
+		{name: "dep list", args: []string{"dep", "list", "tk-1", "extra"}, want: "usage: tack dep list <id>"},
+		{name: "labels list", args: []string{"labels", "list", "tk-1", "extra"}, want: "usage: tack labels list <id>"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runCLIError(t, repo, tc.args...)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("expected %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestCreateParsesRepeatableFlags(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+	t.Setenv("TACK_ACTOR", "alice")
+
+	runCLI(t, repo, "init")
+
+	blockerA := createIssue(t, repo, []string{
+		"create",
+		"--title", "blocker-a",
+		"--description", "body",
+		"--json",
+	})
+	blockerB := createIssue(t, repo, []string{
+		"create",
+		"--title", "blocker-b",
+		"--description", "body",
+		"--json",
+	})
+
+	created := createIssue(t, repo, []string{
+		"create",
+		"--title", "target",
+		"--description", "body",
+		"--depends-on", stringField(t, blockerA, "id"),
+		"--depends-on", stringField(t, blockerB, "id"),
+		"--label", "backend",
+		"--label", "cli",
+		"--json",
+	})
+
+	labels := runJSON[[]string](t, repo, "labels", "list", stringField(t, created, "id"), "--json")
+	sort.Strings(labels)
+
+	if strings.Join(labels, ",") != "backend,cli" {
+		t.Fatalf("unexpected labels: %#v", labels)
+	}
+
+	deps := runJSON[map[string]any](t, repo, "dep", "list", stringField(t, created, "id"), "--json")
+
+	blockedBy, ok := deps["blocked_by"].([]any)
+	if !ok || len(blockedBy) != 2 {
+		t.Fatalf("unexpected blocked_by payload: %#v", deps)
+	}
+
+	sourceIDs := make([]string, 0, len(blockedBy))
+	for _, entry := range blockedBy {
+		link, ok := entry.(map[string]any)
+		if !ok {
+			t.Fatalf("expected dependency object, got %T", entry)
+		}
+
+		sourceIDs = append(sourceIDs, stringField(t, link, "source_id"))
+	}
+
+	sort.Strings(sourceIDs)
+
+	wantIDs := []string{stringField(t, blockerA, "id"), stringField(t, blockerB, "id")}
+	sort.Strings(wantIDs)
+
+	if strings.Join(sourceIDs, ",") != strings.Join(wantIDs, ",") {
+		t.Fatalf("unexpected dependency IDs: got %v want %v", sourceIDs, wantIDs)
 	}
 }
 
