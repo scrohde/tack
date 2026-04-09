@@ -414,6 +414,96 @@ func TestReadyExcludesParentsWithOpenChildrenJSON(t *testing.T) {
 	}
 }
 
+func TestExportJira(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+	t.Setenv("TACK_ACTOR", "alice")
+
+	runCLI(t, repo, "init")
+
+	epic := createIssue(t, repo, []string{
+		"create",
+		"--title", "Jira export epic",
+		"--type", "epic",
+		"--priority", "high",
+		"--description", "body",
+		"--json",
+	})
+	task := createIssue(t, repo, []string{
+		"create",
+		"--title", "Top-level task",
+		"--type", "task",
+		"--priority", "medium",
+		"--description", "body",
+		"--parent", stringField(t, epic, "id"),
+		"--json",
+	})
+	nested := createIssue(t, repo, []string{
+		"create",
+		"--title", "Nested subtask",
+		"--type", "task",
+		"--priority", "medium",
+		"--description", "body",
+		"--parent", stringField(t, task, "id"),
+		"--json",
+	})
+	otherEpic := createIssue(t, repo, []string{
+		"create",
+		"--title", "Other epic",
+		"--type", "epic",
+		"--priority", "medium",
+		"--description", "body",
+		"--json",
+	})
+	createIssue(t, repo, []string{
+		"create",
+		"--title", "Outside task",
+		"--type", "task",
+		"--priority", "medium",
+		"--description", "body",
+		"--parent", stringField(t, otherEpic, "id"),
+		"--json",
+	})
+
+	exported := runJSON[map[string]any](t, repo, "export", "--jira", stringField(t, epic, "id"))
+
+	if exported["projectKey"] != "" {
+		t.Fatalf("expected empty projectKey in Jira export, got %#v", exported)
+	}
+
+	epicPayload, ok := exported["epic"].(map[string]any)
+	if !ok || epicPayload["issueType"] != "Epic" || epicPayload["summary"] != "Jira export epic" {
+		t.Fatalf("unexpected Jira epic payload: %#v", exported["epic"])
+	}
+
+	issuesPayload, ok := exported["issues"].([]any)
+	if !ok || len(issuesPayload) != 2 {
+		t.Fatalf("expected planned issues in Jira export, got %#v", exported)
+	}
+
+	secondIssue, ok := issuesPayload[1].(map[string]any)
+	if !ok || secondIssue["clientId"] != nested["id"] {
+		t.Fatalf("expected nested issue in epic-scoped Jira export, got %#v", issuesPayload)
+	}
+
+	optionsPayload, ok := exported["options"].(map[string]any)
+	if !ok || optionsPayload["createSubtasks"] != true {
+		t.Fatalf("expected Jira export to request subtask creation, got %#v", exported["options"])
+	}
+}
+
+func TestExportJiraRequiresEpicID(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+
+	runCLI(t, repo, "init")
+
+	err := runCLIError(t, repo, "export", "--jira")
+	if err == nil || !strings.Contains(err.Error(), "flag needs an argument: -jira") {
+		t.Fatalf("expected missing jira id error, got %v", err)
+	}
+}
+
 func TestListAndReadySummaryJSON(t *testing.T) {
 	repo := testutil.TempRepo(t)
 	testutil.Chdir(t, repo)

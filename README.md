@@ -151,7 +151,7 @@ tack comment add|list
 tack dep add|remove|list
 tack skill install [--home|--path <dir>]
 tack labels add|remove|list
-tack export --json
+tack export [--json] [--jira <epic-id>]
 ```
 
 Useful examples:
@@ -161,6 +161,7 @@ tack list --json --summary
 tack ready --json --summary
 tack list --status open --type bug --label backend --limit 20
 tack ready --assignee alice --json
+tack export --jira tk-123
 tack help ready
 tack ready --help
 ```

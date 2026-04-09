@@ -1203,14 +1203,20 @@ func (a *App) runLabelsList(ctx context.Context, args []string) error {
 func (a *App) runExport(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("export", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", true, "output JSON")
+	jiraOut := fs.String("jira", "", "output Jira epic plan JSON for the given epic id")
 
-	err := a.parseFlags(fs, args, "usage: tack export --json")
+	err := a.parseFlags(fs, args, "usage: tack export [--json] [--jira <epic-id>]")
 	if err != nil {
 		return err
 	}
 
-	if !*jsonOut {
-		return errors.New("export only supports JSON")
+	if fs.NArg() != 0 {
+		return errors.New("usage: tack export [--json] [--jira <epic-id>]")
+	}
+
+	jiraID := strings.TrimSpace(*jiraOut)
+	if !*jsonOut && jiraID == "" {
+		return errors.New("export requires --json or --jira")
 	}
 
 	_, s, err := openRepoStore()
@@ -1218,6 +1224,15 @@ func (a *App) runExport(ctx context.Context, args []string) error {
 		return err
 	}
 	defer closeStore(s)
+
+	if jiraID != "" {
+		data, err := s.ExportJira(ctx, jiraID)
+		if err != nil {
+			return err
+		}
+
+		return writeJSON(a.stdout, data)
+	}
 
 	data, err := s.Export(ctx)
 	if err != nil {
@@ -1432,7 +1447,7 @@ func (a *App) printUsage() error {
   tack dep add|remove|list
   tack skill install [--home|--path <dir>]
   tack labels add|remove|list
-  tack export --json`)
+  tack export [--json] [--jira <epic-id>]`)
 
 	return err
 }
