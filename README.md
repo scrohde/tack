@@ -1,38 +1,10 @@
 # tack
 
-`tack` is a tiny local issue tracker for people who like working with coding agents without losing the plot.
+`tack` is a tiny local issue management tool. It installs a skill for agents to use.
 
-Instead of keeping the whole plan in one giant chat, you turn the plan into durable repo-local tasks, complete with parent/child structure, dependencies, notes, and history. The human decides what should happen. The agent helps plan it, break it apart, and execute it one ready task at a time.
+`tack` makes it easy to break a large plan into a well-structured graph of issues with clear scope, dependencies, and labels. It is designed to be used by agents, but it is also a nice way for humans to track work without leaving the terminal.
 
-## What It Feels Like
-
-The usual human workflow looks like this:
-
-1. Ask an agent to help plan a project or feature.
-2. Review the plan until it actually makes sense.
-3. Ask the agent to convert that plan into tacks without dropping details.
-4. Let the agent work from the ready queue in small, reviewable chunks.
-
-That middle step is the important one. You do not want a vague todo list. You want implementation-ready tasks with:
-
-- clear scope
-- parent-child relationships
-- blockers and dependencies
-- labels and notes
-- enough detail that a fresh agent session can pick up the work cleanly
-
-In other words: plan once, decompose carefully, execute calmly.
-
-## Why Use It
-
-`tack` is useful when you want:
-
-- repo-local task tracking instead of another hosted tool
-- a clean handoff point between planning mode and execution mode
-- agents to work in the right order instead of freestyle improvisation
-- an audit trail of what changed, what got blocked, and what got closed
-
-Everything lives in the repository at `.tack/issues.db`, so the work stays close to the code.
+Instead of implementing a whole plan all at once, break it down into tasks and have one or more agents pick up ready tasks to work on individually with a fresh context window.
 
 ## Typical Human Workflow
 
@@ -42,37 +14,19 @@ Install `tack`, go to the repository you care about, and initialize it once:
 tack init
 ```
 
-If you want the repo-local agent instructions installed too:
+This creates a `.tack` directory to hold the issue database and config, and it creates an `.agents/skills/tack` directory with the skill definition.
 
-```bash
-tack skill install
-```
+Then use an agent in planning mode to build a plan (or however you like to build a plan). Once the plan is solid, ask your agent to break the plan down into issues with:
 
-Then use an agent in planning mode to build the actual project plan. Once the plan is solid, ask for the conversion step explicitly. A good prompt is:
+> Use tack to create tasks from this plan.
 
-> Create tack issues from this plan. Do not lose details. Preserve scope, acceptance criteria, parent-child relationships, and dependencies so the work can be executed in the right order by a later agent session.
+After that, you can start a fresh implementation-focused session and say something like:
 
-After that, you can start a fresh implementation-focused session and say:
+> Implement the next ready task and commit the changes.
 
-> Implement 1 or 2 ready issues from tack.
+You can get creative here - make use of sub-agents or whatever.
 
 That keeps the execution agent narrow, focused, and much easier to review.
-
-## A Simple Loop
-
-```bash
-tack ready --json --summary
-tack show <id> --json
-tack update <id> --claim --json
-```
-
-That is the core loop:
-
-- ask tack what is ready
-- inspect the exact issue to work on
-- claim it before changing things
-
-When the agent discovers new work, it can create follow-up tacks with the right parent and dependency links instead of burying that context in chat.
 
 ## Features That Matter For Agent Work
 
@@ -109,17 +63,18 @@ Run it anywhere inside the repo:
 ```bash
 tack help
 tack init
+tack tui
 ```
 
-Initialization creates only repo-local state:
+Initialization creates repo-local state:
 
 - `.tack/issues.db`
 - `.tack/config.json`
 - `.tack/.gitignore`
+- `.agents/skills/tack/SKILL.md`
+- `.agents/.gitignore` when `tack` creates `.agents/`
 
-`tack init` keeps its ignore rules inside `.tack/`, so you do not need to edit the repo root `.gitignore`.
-
-If you install the tack skill into the repo, tack also creates `.agents/.gitignore` so local agent instructions stay out of version control too.
+`tack init` keeps its ignore rules inside `.tack/`, and also adds `.agents/.gitignore` when it creates `.agents/`, so they don't automatically get added to your commits.
 
 If you ever want to remove tack cleanly, delete `.tack` and `.agents/skills/tack`.
 
@@ -131,7 +86,7 @@ The install target is explicit:
 - `tack skill install --home` installs to `$HOME/.agents/skills/tack`
 - `tack skill install --path /tmp/skills` installs to `/tmp/skills/tack`
 
-This is separate from `tack init` on purpose.
+`tack init` performs the repo-local install automatically. Use `tack skill install` when you want to reinstall it explicitly or target `--home` or `--path`.
 
 ## Commands
 

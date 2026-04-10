@@ -18,21 +18,31 @@ type InstallResult struct {
 }
 
 func InstallTackSkill(skillsRoot string) (InstallResult, error) {
-	err := ensureAgentsGitignore(filepath.Dir(skillsRoot))
-	if err != nil {
-		return InstallResult{}, err
+	agentsDir := filepath.Dir(skillsRoot)
+	if filepath.Base(agentsDir) == ".agents" {
+		createdAgentsDir, err := ensureDir(agentsDir)
+		if err != nil {
+			return InstallResult{}, err
+		}
+
+		if createdAgentsDir {
+			err = writeFileIfMissing(filepath.Join(agentsDir, ".gitignore"), []byte(ignoreAllContents), 0o644)
+			if err != nil {
+				return InstallResult{}, err
+			}
+		}
 	}
 
 	targetDir := filepath.Join(skillsRoot, TackSkillName)
 
-	err = os.MkdirAll(targetDir, 0o755)
+	err := os.MkdirAll(targetDir, 0o755)
 	if err != nil {
 		return InstallResult{}, err
 	}
 
 	targetPath := filepath.Join(targetDir, tackSkillFileName)
 
-	err = os.WriteFile(targetPath, []byte(TackSkillContent), 0o644)
+	err = writeFileIfMissing(targetPath, []byte(TackSkillContent), 0o644)
 	if err != nil {
 		return InstallResult{}, err
 	}
@@ -44,22 +54,39 @@ func InstallTackSkill(skillsRoot string) (InstallResult, error) {
 	}, nil
 }
 
-func ensureAgentsGitignore(agentsDir string) error {
-	err := os.MkdirAll(agentsDir, 0o755)
-	if err != nil {
-		return err
+func ensureDir(path string) (bool, error) {
+	_, err := os.Stat(path)
+	switch {
+	case err == nil:
+		return false, nil
+	case !os.IsNotExist(err):
+		return false, err
 	}
 
-	path := filepath.Join(agentsDir, ".gitignore")
+	err = os.MkdirAll(path, 0o755)
+	if err != nil {
+		return false, err
+	}
 
-	_, err = os.Stat(path)
+	return true, nil
+}
+
+func writeFileIfMissing(path string, contents []byte, mode os.FileMode) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err == nil {
+		_, err = file.Write(contents)
+		closeErr := file.Close()
+
+		if err != nil {
+			return err
+		}
+
+		return closeErr
+	}
+
+	if os.IsExist(err) {
 		return nil
 	}
 
-	if !os.IsNotExist(err) {
-		return err
-	}
-
-	return os.WriteFile(path, []byte(ignoreAllContents), 0o644)
+	return err
 }

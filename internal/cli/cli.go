@@ -137,15 +137,30 @@ func (a *App) runInit(args []string) error {
 		return err
 	}
 
+	installResult, err := skill.InstallTackSkill(filepath.Join(repoRoot, ".agents", "skills"))
+	if err != nil {
+		return err
+	}
+
 	if *jsonOut {
 		return writeJSON(a.stdout, map[string]any{
-			"repo_root": repoRoot,
-			"db_path":   filepath.Join(repoRoot, ".tack", "issues.db"),
-			"config":    filepath.Join(repoRoot, ".tack", "config.json"),
+			"repo_root":           repoRoot,
+			"db_path":             filepath.Join(repoRoot, ".tack", "issues.db"),
+			"config":              filepath.Join(repoRoot, ".tack", "config.json"),
+			"skill_name":          skill.TackSkillName,
+			"skills_root":         installResult.SkillsRoot,
+			"installed_skill_dir": installResult.InstalledDir,
+			"installed_path":      installResult.InstalledPath,
 		})
 	}
 
-	_, err = fmt.Fprintf(a.stdout, "initialized tack in %s\n", filepath.Join(repoRoot, ".tack"))
+	_, err = fmt.Fprintf(
+		a.stdout,
+		"initialized tack in %s\ninstalled %s skill to %s\n",
+		filepath.Join(repoRoot, ".tack"),
+		skill.TackSkillName,
+		installResult.InstalledPath,
+	)
 
 	return err
 }

@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"tack/internal/cli"
+	"tack/internal/issues"
+	"tack/internal/store"
 	"tack/internal/testutil"
 )
 
@@ -44,6 +46,10 @@ func TestInitCreatesRepoState(t *testing.T) {
 		t.Fatalf("unexpected .tack/.gitignore: %q", string(got))
 	}
 
+	skillTarget := filepath.Join(repo, ".agents", "skills", "tack", "SKILL.md")
+	assertFileHasContent(t, skillTarget)
+	assertExactFileContent(t, filepath.Join(repo, ".agents", ".gitignore"), "*\n")
+
 	var payload map[string]any
 
 	err = json.Unmarshal(stdout.Bytes(), &payload)
@@ -58,6 +64,22 @@ func TestInitCreatesRepoState(t *testing.T) {
 
 	if payload["repo_root"] != wantRoot {
 		t.Fatalf("unexpected repo root payload: %#v", payload)
+	}
+
+	if payload["skill_name"] != "tack" {
+		t.Fatalf("unexpected skill name payload: %#v", payload)
+	}
+
+	if got := stringField(t, payload, "skills_root"); canonicalPath(t, got) != canonicalPath(t, filepath.Join(repo, ".agents", "skills")) {
+		t.Fatalf("unexpected skills root payload: %#v", payload)
+	}
+
+	if got := stringField(t, payload, "installed_skill_dir"); canonicalPath(t, got) != canonicalPath(t, filepath.Join(repo, ".agents", "skills", "tack")) {
+		t.Fatalf("unexpected installed skill dir payload: %#v", payload)
+	}
+
+	if got := stringField(t, payload, "installed_path"); canonicalPath(t, got) != canonicalPath(t, skillTarget) {
+		t.Fatalf("unexpected installed path payload: %#v", payload)
 	}
 }
 
@@ -90,6 +112,162 @@ func TestInitPreservesExistingTackGitignore(t *testing.T) {
 
 	if string(got) != customContent {
 		t.Fatalf("expected existing .tack/.gitignore to be preserved, got %q", string(got))
+	}
+}
+
+func TestInitPreservesExistingDB(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+
+	dbPath := filepath.Join(repo, ".tack", "issues.db")
+
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open existing db: %v", err)
+	}
+
+	issue, err := s.CreateIssue(context.Background(), store.CreateIssueInput{
+		Title:       "keep existing issue",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatalf("seed existing db: %v", err)
+	}
+
+	err = s.Close()
+	if err != nil {
+		t.Fatalf("close seeded db: %v", err)
+	}
+
+	runCLI(t, repo, "init")
+
+	reopened, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen db after init: %v", err)
+	}
+
+	defer func() {
+		err = reopened.Close()
+		if err != nil {
+			t.Fatalf("close reopened db: %v", err)
+		}
+	}()
+
+	got, err := reopened.GetIssue(context.Background(), issue.ID)
+	if err != nil {
+		t.Fatalf("get preserved issue: %v", err)
+	}
+
+	if got.ID != issue.ID || got.Title != issue.Title || got.Description != issue.Description {
+		t.Fatalf("expected existing issue to be preserved, got %#v", got)
+	}
+}
+
+func TestInitPreservesExistingAgentsContents(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+
+	agentsDir := filepath.Join(repo, ".agents")
+
+	err := os.MkdirAll(filepath.Join(agentsDir, "notes"), 0o755)
+	if err != nil {
+		t.Fatalf("mkdir .agents/notes: %v", err)
+	}
+
+	const (
+		customGitignore = "custom\n"
+		customSkill     = "existing skill\n"
+		customNote      = "keep this\n"
+	)
+
+	err = os.WriteFile(filepath.Join(agentsDir, ".gitignore"), []byte(customGitignore), 0o644)
+	if err != nil {
+		t.Fatalf("write .agents/.gitignore: %v", err)
+	}
+
+	skillPath := filepath.Join(agentsDir, "skills", "tack", "SKILL.md")
+
+	err = os.MkdirAll(filepath.Dir(skillPath), 0o755)
+	if err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+
+	err = os.WriteFile(skillPath, []byte(customSkill), 0o644)
+	if err != nil {
+		t.Fatalf("write existing skill: %v", err)
+	}
+
+	notePath := filepath.Join(agentsDir, "notes", "custom.txt")
+
+	err = os.WriteFile(notePath, []byte(customNote), 0o644)
+	if err != nil {
+		t.Fatalf("write custom note: %v", err)
+	}
+
+	runCLI(t, repo, "init")
+
+	gotGitignore, err := os.ReadFile(filepath.Join(agentsDir, ".gitignore"))
+	if err != nil {
+		t.Fatalf("read .agents/.gitignore: %v", err)
+	}
+
+	if string(gotGitignore) != customGitignore {
+		t.Fatalf("expected existing .agents/.gitignore to be preserved, got %q", string(gotGitignore))
+	}
+
+	gotSkill, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read existing skill: %v", err)
+	}
+
+	if string(gotSkill) != customSkill {
+		t.Fatalf("expected existing skill to be preserved, got %q", string(gotSkill))
+	}
+
+	gotNote, err := os.ReadFile(notePath)
+	if err != nil {
+		t.Fatalf("read custom note: %v", err)
+	}
+
+	if string(gotNote) != customNote {
+		t.Fatalf("expected existing .agents content to be preserved, got %q", string(gotNote))
+	}
+}
+
+func TestInitDoesNotCreateAgentsGitignoreWhenAgentsDirExists(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+
+	agentsDir := filepath.Join(repo, ".agents")
+
+	err := os.MkdirAll(filepath.Join(agentsDir, "notes"), 0o755)
+	if err != nil {
+		t.Fatalf("mkdir .agents/notes: %v", err)
+	}
+
+	runCLI(t, repo, "init")
+
+	_, err = os.Stat(filepath.Join(agentsDir, ".gitignore"))
+	if !os.IsNotExist(err) {
+		t.Fatalf("expected no .agents/.gitignore for existing .agents dir, got %v", err)
+	}
+}
+
+func TestInitPlaintextOutput(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+
+	out, err := runCLIBytes(repo, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	want := "initialized tack in " + canonicalPath(t, filepath.Join(repo, ".tack")) + "\n" +
+		"installed tack skill to " + canonicalPath(t, filepath.Join(repo, ".agents", "skills", "tack", "SKILL.md")) + "\n"
+	if string(out) != want {
+		t.Fatalf("unexpected init output: got %q want %q", string(out), want)
 	}
 }
 
