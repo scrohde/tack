@@ -496,6 +496,8 @@ func TestDetailsAndCommentsTabsRenderTypedDetailContext(t *testing.T) {
 					"tk-3": {ID: "tk-3", Title: "blocker", Status: issues.StatusBlocked},
 					"tk-4": {ID: "tk-4", Title: "downstream", Status: issues.StatusOpen},
 				},
+				LatestCloseReason:  "done and verified",
+				LatestReopenReason: "follow-up requested",
 			},
 		},
 		focused: map[string]issues.FocusedGraphView{
@@ -516,6 +518,10 @@ func TestDetailsAndCommentsTabsRenderTypedDetailContext(t *testing.T) {
 		t.Fatalf("details tab did not render related context:\n%s", details)
 	}
 
+	if !strings.Contains(details, "close reason") || !strings.Contains(details, "done and verified") || !strings.Contains(details, "reopen reason") || !strings.Contains(details, "follow-up requested") {
+		t.Fatalf("details tab did not render transition reasons:\n%s", details)
+	}
+
 	plainDetails := ansiPattern.ReplaceAllString(details, "")
 	if !strings.Contains(plainDetails, "Context") || !strings.Contains(plainDetails, "detail body") || strings.Contains(plainDetails, "# Context") {
 		t.Fatalf("details tab did not render markdown description cleanly:\n%s", plainDetails)
@@ -524,6 +530,40 @@ func TestDetailsAndCommentsTabsRenderTypedDetailContext(t *testing.T) {
 	comments := m.renderCommentsTab()
 	if !strings.Contains(comments, "1 comment(s)") || !strings.Contains(comments, "needs follow-up") {
 		t.Fatalf("comments tab did not render typed comments:\n%s", comments)
+	}
+}
+
+func TestDetailsTabOmitsEmptyTransitionReasons(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		allSummaries: []issues.IssueSummary{
+			{ID: "tk-1", Title: "target", Status: issues.StatusOpen, Type: issues.TypeTask},
+		},
+		details: map[string]issues.IssueDetailView{
+			"tk-1": {
+				Issue: issues.Issue{
+					ID:       "tk-1",
+					Title:    "target",
+					Status:   issues.StatusOpen,
+					Type:     issues.TypeTask,
+					Priority: "medium",
+				},
+			},
+		},
+		project: issues.ProjectGraphView{
+			Issues: []issues.IssueSummary{{ID: "tk-1", Title: "target", Status: issues.StatusOpen}},
+		},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	details := m.renderDetailsTab(72)
+	if strings.Contains(details, "close reason") || strings.Contains(details, "reopen reason") {
+		t.Fatalf("details tab should omit empty transition reason rows:\n%s", details)
 	}
 }
 

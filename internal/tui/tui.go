@@ -458,6 +458,17 @@ func (m *model) renderDetailsTab(width int) string {
 		detailTitleStyle.Render(issue.Title),
 		metaLine("id", issue.ID),
 		metaLine("status", issue.Status),
+	}
+
+	if m.detailView.LatestCloseReason != "" {
+		lines = append(lines, metaLine("close reason", m.detailView.LatestCloseReason))
+	}
+
+	if m.detailView.LatestReopenReason != "" {
+		lines = append(lines, metaLine("reopen reason", m.detailView.LatestReopenReason))
+	}
+
+	lines = append(lines,
 		metaLine("type", issue.Type),
 		metaLine("priority", blankIfEmpty(issue.Priority)),
 		metaLine("assignee", blankIfEmpty(issue.Assignee)),
@@ -471,7 +482,7 @@ func (m *model) renderDetailsTab(width int) string {
 		"",
 		sectionTitleStyle.Render("Blocks"),
 		m.renderRelatedLinks(m.detailView.Dependencies.Blocks, func(link issues.Link) string { return link.TargetID }),
-	}
+	)
 
 	if strings.TrimSpace(issue.Description) != "" {
 		lines = append(lines, "", sectionTitleStyle.Render("Description"), m.renderMarkdown(issue.ID, width, issue.Description))
