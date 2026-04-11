@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -56,6 +55,41 @@ const (
 
 var detailTabNames = []string{"Details", "Comments", "Project Graph"}
 
+type filterPickerMode string
+
+const (
+	filterPickerHidden filterPickerMode = ""
+	filterPickerKeys   filterPickerMode = "keys"
+	filterPickerValues filterPickerMode = "values"
+	filterPickerLimit  filterPickerMode = "limit"
+)
+
+type filterPickerKey string
+
+const (
+	filterPickerKeyStatus   filterPickerKey = "status"
+	filterPickerKeyType     filterPickerKey = "type"
+	filterPickerKeyLabel    filterPickerKey = "label"
+	filterPickerKeyAssignee filterPickerKey = "assignee"
+	filterPickerKeyLimit    filterPickerKey = "limit"
+	filterPickerKeyReset    filterPickerKey = "reset"
+)
+
+type filterPickerOption struct {
+	key   filterPickerKey
+	label string
+}
+
+type filterPickerState struct {
+	mode       filterPickerMode
+	keyIndex   int
+	valueIndex int
+	key        filterPickerKey
+	values     []string
+	selected   map[string]struct{}
+	limitInput string
+}
+
 type model struct {
 	ctx      context.Context
 	repoRoot string
@@ -72,8 +106,7 @@ type model struct {
 	activeTab detailTab
 	showHelp  bool
 
-	filterInputActive bool
-	filterInput       string
+	filterPicker filterPickerState
 
 	detailView       issues.IssueDetailView
 	projectGraphView issues.ProjectGraphView
@@ -131,7 +164,7 @@ func newModel(ctx context.Context, repoRoot string, reader summaryReader, option
 		repoRoot:  repoRoot,
 		reader:    reader,
 		source:    options.DataSource(),
-		filter:    options.Filter,
+		filter:    sanitizeFilterForSource(options.DataSource(), options.Filter),
 		focus:     paneBrowser,
 		activeTab: tabDetails,
 		width:     120,
@@ -178,8 +211,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) handleKey(key string) tea.Cmd {
-	if m.filterInputActive {
-		return m.handleFilterInputKey(key)
+	if m.filterPicker.mode != filterPickerHidden {
+		return m.handleFilterPickerKey(key)
 	}
 
 	if m.handleTextViewportKey(key) {
@@ -196,8 +229,7 @@ func (m *model) handleKey(key string) tea.Cmd {
 	case "?":
 		m.showHelp = !m.showHelp
 	case "/":
-		m.filterInputActive = true
-		m.filterInput = ""
+		m.openFilterPicker()
 	case "tab", "right":
 		m.advanceFocusOrTab()
 	case "shift+tab", "left":
@@ -250,8 +282,8 @@ func (m *model) render() string {
 
 	parts := []string{header}
 
-	if m.filterInputActive {
-		parts = append(parts, filterStyle.Render(m.renderFilterEditor()))
+	if m.filterPicker.mode != filterPickerHidden {
+		parts = append(parts, filterStyle.Render(m.renderFilterPicker()))
 	}
 
 	staticHeight := renderedHeight(parts...) + lipgloss.Height(footer)
@@ -383,7 +415,7 @@ func (m *model) renderHeader() string {
 }
 
 func (m *model) renderFooter() string {
-	return "q quit  tab/left/right switch  j/k move or scroll  enter pin  / filter  g/G graph  ? more"
+	return "q quit  tab/left/right switch  j/k move or scroll  enter pin/select  / filters  g/G graph  ? more"
 }
 
 func (m *model) renderExpandedHelp() string {
@@ -391,7 +423,9 @@ func (m *model) renderExpandedHelp() string {
 		"Controls",
 		"q quit, ? toggle help, tab/shift+tab and left/right switch panes or tabs",
 		"j/k and up/down move the issue selection",
-		"/ opens filter editing; use status=, type=, label=, assignee=, limit=, or reset",
+		"/ opens guided filters; choose status, type, label, assignee, limit, or reset",
+		"In value pickers, space toggles the highlighted value and enter applies the selection",
+		"In the limit prompt, type digits and press enter; an empty value clears the limit",
 		"enter pins the selected issue in the detail pane",
 		"esc returns focus to the browser and clears the current pin",
 		"r toggles between all issues and ready issues, ctrl+r refreshes from disk",
@@ -594,6 +628,8 @@ func (m *model) toggleSource() {
 		m.source = DataSourceReady
 	}
 
+	m.filter = sanitizeFilterForSource(m.source, m.filter)
+
 	m.refresh()
 }
 
@@ -693,39 +729,179 @@ func (m *model) syncDetailViews() {
 	m.lastError = nil
 }
 
-func (m *model) handleFilterInputKey(key string) tea.Cmd {
+func (m *model) openFilterPicker() {
+	m.filterPicker = filterPickerState{mode: filterPickerKeys}
+}
+
+func (m *model) closeFilterPicker() {
+	m.filterPicker = filterPickerState{}
+}
+
+func (m *model) handleFilterPickerKey(key string) tea.Cmd {
+	switch m.filterPicker.mode {
+	case filterPickerKeys:
+		return m.handleFilterPickerKeyList(key)
+	case filterPickerValues:
+		return m.handleFilterPickerValues(key)
+	case filterPickerLimit:
+		return m.handleFilterPickerLimit(key)
+	default:
+		return nil
+	}
+}
+
+func (m *model) handleFilterPickerKeyList(key string) tea.Cmd {
+	options := m.filterPickerOptions()
+	if len(options) == 0 {
+		m.closeFilterPicker()
+		return nil
+	}
+
 	switch key {
 	case "esc":
-		m.filterInputActive = false
-		m.filterInput = ""
+		m.closeFilterPicker()
+	case "up", "k":
+		m.filterPicker.keyIndex = clampInt(m.filterPicker.keyIndex-1, 0, len(options)-1)
+	case "down", "j":
+		m.filterPicker.keyIndex = clampInt(m.filterPicker.keyIndex+1, 0, len(options)-1)
 	case "enter":
-		next, err := parseFilterInput(m.filter, m.filterInput)
-		if err != nil {
-			m.lastError = err
-			return nil
-		}
+		selected := options[clampInt(m.filterPicker.keyIndex, 0, len(options)-1)]
 
-		m.filter = next
-		m.filterInputActive = false
-		m.filterInput = ""
-
-		err = m.reload()
-		if err != nil {
-			m.lastError = err
-		}
-	case "backspace", "ctrl+h":
-		if len(m.filterInput) > 0 {
-			m.filterInput = m.filterInput[:len(m.filterInput)-1]
-		}
-	case "space":
-		m.filterInput += " "
-	default:
-		if len(key) == 1 {
-			m.filterInput += key
+		switch selected.key {
+		case filterPickerKeyLimit:
+			m.filterPicker.mode = filterPickerLimit
+			if m.filter.Limit > 0 {
+				m.filterPicker.limitInput = strconv.Itoa(m.filter.Limit)
+			} else {
+				m.filterPicker.limitInput = ""
+			}
+		case filterPickerKeyReset:
+			m.filter = sanitizeFilterForSource(m.source, store.ListFilter{})
+			m.closeFilterPicker()
+			m.reloadFilterState()
+		default:
+			err := m.openFilterValuePicker(selected.key)
+			if err != nil {
+				m.lastError = err
+			}
 		}
 	}
 
 	return nil
+}
+
+func (m *model) openFilterValuePicker(key filterPickerKey) error {
+	values, err := m.filterOptions(key.storeKey())
+	if err != nil {
+		return err
+	}
+
+	selectedValues := filterValuesForKey(m.filter, key)
+	values = mergeFilterValues(values, selectedValues)
+
+	selected := make(map[string]struct{}, len(selectedValues))
+	for _, value := range selectedValues {
+		selected[value] = struct{}{}
+	}
+
+	m.filterPicker.mode = filterPickerValues
+	m.filterPicker.key = key
+	m.filterPicker.values = values
+	m.filterPicker.selected = selected
+	m.filterPicker.valueIndex = 0
+
+	if len(values) > 0 {
+		for i, value := range values {
+			if _, ok := selected[value]; ok {
+				m.filterPicker.valueIndex = i
+				break
+			}
+		}
+	}
+
+	return nil
+}
+
+func (m *model) handleFilterPickerValues(key string) tea.Cmd {
+	values := m.filterPicker.values
+
+	switch key {
+	case "esc":
+		m.filterPicker.mode = filterPickerKeys
+		m.filterPicker.key = ""
+		m.filterPicker.values = nil
+		m.filterPicker.selected = nil
+		m.filterPicker.valueIndex = 0
+	case "up", "k":
+		if len(values) > 0 {
+			m.filterPicker.valueIndex = clampInt(m.filterPicker.valueIndex-1, 0, len(values)-1)
+		}
+	case "down", "j":
+		if len(values) > 0 {
+			m.filterPicker.valueIndex = clampInt(m.filterPicker.valueIndex+1, 0, len(values)-1)
+		}
+	case "space":
+		if len(values) == 0 {
+			return nil
+		}
+
+		value := values[clampInt(m.filterPicker.valueIndex, 0, len(values)-1)]
+		if _, ok := m.filterPicker.selected[value]; ok {
+			delete(m.filterPicker.selected, value)
+		} else {
+			m.filterPicker.selected[value] = struct{}{}
+		}
+	case "enter":
+		next := applyFilterValuesForKey(m.filter, m.filterPicker.key, orderedSelectedValues(values, m.filterPicker.selected))
+		m.filter = sanitizeFilterForSource(m.source, next)
+		m.closeFilterPicker()
+		m.reloadFilterState()
+	}
+
+	return nil
+}
+
+func (m *model) handleFilterPickerLimit(key string) tea.Cmd {
+	switch key {
+	case "esc":
+		m.filterPicker.mode = filterPickerKeys
+		m.filterPicker.limitInput = ""
+	case "backspace", "ctrl+h":
+		if len(m.filterPicker.limitInput) > 0 {
+			m.filterPicker.limitInput = m.filterPicker.limitInput[:len(m.filterPicker.limitInput)-1]
+		}
+	case "enter":
+		next := m.filter
+
+		if strings.TrimSpace(m.filterPicker.limitInput) == "" {
+			next.Limit = 0
+		} else {
+			limit, err := strconv.Atoi(m.filterPicker.limitInput)
+			if err != nil || limit < 0 {
+				m.lastError = fmt.Errorf("invalid limit %q", m.filterPicker.limitInput)
+				return nil
+			}
+
+			next.Limit = limit
+		}
+
+		m.filter = sanitizeFilterForSource(m.source, next)
+		m.closeFilterPicker()
+		m.reloadFilterState()
+	default:
+		if len(key) == 1 && key[0] >= '0' && key[0] <= '9' {
+			m.filterPicker.limitInput += key
+		}
+	}
+
+	return nil
+}
+
+func (m *model) reloadFilterState() {
+	err := m.reload()
+	if err != nil {
+		m.lastError = err
+	}
 }
 
 func (m *model) currentDetailID() string {
@@ -759,12 +935,55 @@ func (m *model) hasSummary(id string) bool {
 	return false
 }
 
-func (m *model) renderFilterEditor() string {
+func (m *model) renderFilterPicker() string {
 	lines := []string{
-		sectionTitleStyle.Render("Filter Editor"),
+		sectionTitleStyle.Render("Guided Filters"),
 		"Current: " + formatFilter(m.filter),
-		"Use key=value tokens (status, type, label, assignee, limit) or reset.",
-		"> " + m.filterInput,
+	}
+
+	switch m.filterPicker.mode {
+	case filterPickerValues:
+		lines = append(lines,
+			"Editing: "+string(m.filterPicker.key),
+			"space toggles  enter applies  esc back",
+		)
+
+		if len(m.filterPicker.values) == 0 {
+			lines = append(lines, mutedTextStyle.Render("No values available for the current filters. Press enter to clear this filter or esc to go back."))
+			return strings.Join(lines, "\n")
+		}
+
+		for i, value := range m.filterPicker.values {
+			marker := "  "
+			if i == clampInt(m.filterPicker.valueIndex, 0, len(m.filterPicker.values)-1) {
+				marker = "> "
+			}
+
+			check := "[ ]"
+			if _, ok := m.filterPicker.selected[value]; ok {
+				check = "[x]"
+			}
+
+			lines = append(lines, fmt.Sprintf("%s%s %s", marker, check, value))
+		}
+	case filterPickerLimit:
+		lines = append(lines,
+			"Editing: limit",
+			"Type digits and press enter. Leave it empty to clear the limit.",
+			"> "+m.filterPicker.limitInput,
+		)
+	default:
+		lines = append(lines, "Choose a filter key to edit.")
+
+		options := m.filterPickerOptions()
+		for i, option := range options {
+			marker := "  "
+			if i == clampInt(m.filterPicker.keyIndex, 0, len(options)-1) {
+				marker = "> "
+			}
+
+			lines = append(lines, fmt.Sprintf("%s%-8s %s", marker, option.label, m.renderFilterPickerKeySummary(option.key)))
+		}
 	}
 
 	return strings.Join(lines, "\n")
@@ -1026,96 +1245,165 @@ func metaLine(label, value string) string {
 	return fmt.Sprintf("%-9s %s", label, value)
 }
 
-func parseFilterInput(current store.ListFilter, input string) (store.ListFilter, error) {
-	trimmed := strings.TrimSpace(input)
-	if trimmed == "" {
-		return current, nil
+func sanitizeFilterForSource(source DataSource, filter store.ListFilter) store.ListFilter {
+	filter.Statuses = append([]string(nil), filter.Statuses...)
+	filter.Types = append([]string(nil), filter.Types...)
+	filter.Labels = append([]string(nil), filter.Labels...)
+	filter.Assignees = append([]string(nil), filter.Assignees...)
+
+	if source == DataSourceReady {
+		filter.Assignees = nil
 	}
 
-	if trimmed == "reset" {
-		return store.ListFilter{}, nil
-	}
-
-	next := current
-
-	for token := range strings.FieldsSeq(trimmed) {
-		key, value, ok := strings.Cut(token, "=")
-		if !ok {
-			return store.ListFilter{}, fmt.Errorf("invalid filter token %q", token)
-		}
-
-		key = strings.TrimSpace(strings.ToLower(key))
-		value = strings.TrimSpace(value)
-
-		switch key {
-		case "status":
-			statuses, err := parseFilterValues(value, issues.IsValidStatus)
-			if err != nil {
-				return store.ListFilter{}, fmt.Errorf("invalid status %q", err.Error())
-			}
-
-			next.Statuses = statuses
-		case "type":
-			types, err := parseFilterValues(value, issues.IsValidType)
-			if err != nil {
-				return store.ListFilter{}, fmt.Errorf("invalid type %q", err.Error())
-			}
-
-			next.Types = types
-		case "label":
-			next.Labels = splitFilterValues(value)
-		case "assignee":
-			next.Assignees = splitFilterValues(value)
-		case "limit":
-			if value == "" {
-				next.Limit = 0
-				continue
-			}
-
-			limit, err := strconv.Atoi(value)
-			if err != nil || limit < 0 {
-				return store.ListFilter{}, fmt.Errorf("invalid limit %q", value)
-			}
-
-			next.Limit = limit
-		default:
-			return store.ListFilter{}, fmt.Errorf("unknown filter key %q", key)
-		}
-	}
-
-	return next, nil
+	return filter
 }
 
-func parseFilterValues(value string, valid func(string) bool) ([]string, error) {
-	values := splitFilterValues(value)
-	for _, entry := range values {
-		if !valid(entry) {
-			return nil, errors.New(entry)
-		}
+func (m *model) filterPickerOptions() []filterPickerOption {
+	options := []filterPickerOption{
+		{key: filterPickerKeyStatus, label: "status"},
+		{key: filterPickerKeyType, label: "type"},
+		{key: filterPickerKeyLabel, label: "label"},
 	}
 
-	return values, nil
+	if m.source != DataSourceReady {
+		options = append(options, filterPickerOption{key: filterPickerKeyAssignee, label: "assignee"})
+	}
+
+	options = append(options,
+		filterPickerOption{key: filterPickerKeyLimit, label: "limit"},
+		filterPickerOption{key: filterPickerKeyReset, label: "reset"},
+	)
+
+	return options
 }
 
-func splitFilterValues(value string) []string {
-	if value == "" {
+func (m *model) renderFilterPickerKeySummary(key filterPickerKey) string {
+	switch key {
+	case filterPickerKeyStatus:
+		return renderFilterValuesSummary(m.filter.Statuses)
+	case filterPickerKeyType:
+		return renderFilterValuesSummary(m.filter.Types)
+	case filterPickerKeyLabel:
+		return renderFilterValuesSummary(m.filter.Labels)
+	case filterPickerKeyAssignee:
+		return renderFilterValuesSummary(m.filter.Assignees)
+	case filterPickerKeyLimit:
+		if m.filter.Limit <= 0 {
+			return "(none)"
+		}
+
+		return strconv.Itoa(m.filter.Limit)
+	case filterPickerKeyReset:
+		if formatFilter(m.filter) == "(none)" {
+			return "clear all filters"
+		}
+
+		return "clear " + formatFilter(m.filter)
+	default:
+		return "(none)"
+	}
+}
+
+func renderFilterValuesSummary(values []string) string {
+	if len(values) == 0 {
+		return "(none)"
+	}
+
+	return strings.Join(values, ", ")
+}
+
+func (k filterPickerKey) storeKey() store.FilterValueKey {
+	switch k {
+	case filterPickerKeyStatus:
+		return store.FilterValueKeyStatus
+	case filterPickerKeyType:
+		return store.FilterValueKeyType
+	case filterPickerKeyLabel:
+		return store.FilterValueKeyLabel
+	case filterPickerKeyAssignee:
+		return store.FilterValueKeyAssignee
+	default:
+		return ""
+	}
+}
+
+func filterValuesForKey(filter store.ListFilter, key filterPickerKey) []string {
+	switch key {
+	case filterPickerKeyStatus:
+		return append([]string(nil), filter.Statuses...)
+	case filterPickerKeyType:
+		return append([]string(nil), filter.Types...)
+	case filterPickerKeyLabel:
+		return append([]string(nil), filter.Labels...)
+	case filterPickerKeyAssignee:
+		return append([]string(nil), filter.Assignees...)
+	default:
 		return nil
 	}
+}
 
-	parts := strings.Split(value, ",")
-	values := make([]string, 0, len(parts))
+func applyFilterValuesForKey(filter store.ListFilter, key filterPickerKey, values []string) store.ListFilter {
+	next := sanitizeFilterForSource(DataSourceAll, filter)
 
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
+	switch key {
+	case filterPickerKeyStatus:
+		next.Statuses = values
+	case filterPickerKeyType:
+		next.Types = values
+	case filterPickerKeyLabel:
+		next.Labels = values
+	case filterPickerKeyAssignee:
+		next.Assignees = values
+	}
+
+	return next
+}
+
+func mergeFilterValues(discovered, selected []string) []string {
+	merged := make([]string, 0, len(discovered)+len(selected))
+	seen := make(map[string]struct{}, len(discovered)+len(selected))
+
+	for _, value := range discovered {
+		value = strings.TrimSpace(value)
+		if value == "" {
 			continue
 		}
 
-		values = append(values, part)
+		if _, ok := seen[value]; ok {
+			continue
+		}
+
+		seen[value] = struct{}{}
+		merged = append(merged, value)
 	}
 
-	if len(values) == 0 {
+	for _, value := range selected {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+
+		if _, ok := seen[value]; ok {
+			continue
+		}
+
+		seen[value] = struct{}{}
+		merged = append(merged, value)
+	}
+
+	return merged
+}
+
+func orderedSelectedValues(options []string, selected map[string]struct{}) []string {
+	if len(selected) == 0 {
 		return nil
+	}
+
+	values := make([]string, 0, len(selected))
+	for _, option := range options {
+		if _, ok := selected[option]; ok {
+			values = append(values, option)
+		}
 	}
 
 	return values

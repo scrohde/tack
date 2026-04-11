@@ -315,7 +315,7 @@ func TestHelpTextMentionsArrowNavigationAndGraphPanning(t *testing.T) {
 	m := &model{}
 
 	footer := m.renderFooter()
-	if !strings.Contains(footer, "tab/left/right switch") {
+	if !strings.Contains(footer, "tab/left/right switch") || !strings.Contains(footer, "/ filters") {
 		t.Fatalf("expected footer to mention left/right switching, got %q", footer)
 	}
 
@@ -326,6 +326,10 @@ func TestHelpTextMentionsArrowNavigationAndGraphPanning(t *testing.T) {
 
 	if !strings.Contains(help, "g or G opens Project Graph") {
 		t.Fatalf("expected help to mention the single graph tab, got:\n%s", help)
+	}
+
+	if !strings.Contains(help, "space toggles the highlighted value") || !strings.Contains(help, "empty value clears the limit") {
+		t.Fatalf("expected help to mention guided filter controls, got:\n%s", help)
 	}
 
 	if !strings.Contains(help, "h/l pan horizontally") {
@@ -412,10 +416,21 @@ func TestGraphTabKeepsHorizontalPanningOnHAndLOnly(t *testing.T) {
 	}
 }
 
-func TestFilterEditorUpdatesFilterAndSummaries(t *testing.T) {
+func TestGuidedFilterPickerUpdatesFilterAndSummaries(t *testing.T) {
 	t.Parallel()
 
 	reader := &fakeReader{
+		filterValuesByRequest: func(source store.FilterValueSource, key store.FilterValueKey, filter store.ListFilter) []string {
+			if source != store.FilterValueSourceAll {
+				t.Fatalf("unexpected source: %q", source)
+			}
+
+			if key != store.FilterValueKeyStatus {
+				t.Fatalf("unexpected key: %q", key)
+			}
+
+			return []string{issues.StatusOpen, issues.StatusBlocked}
+		},
 		listByFilter: func(filter store.ListFilter) []issues.IssueSummary {
 			if len(filter.Statuses) == 1 && filter.Statuses[0] == "blocked" {
 				return []issues.IssueSummary{
@@ -450,11 +465,9 @@ func TestFilterEditorUpdatesFilterAndSummaries(t *testing.T) {
 	}
 
 	m.handleKey("/")
-
-	for _, ch := range "status=blocked" {
-		m.handleKey(string(ch))
-	}
-
+	m.handleKey("enter")
+	m.handleKey("down")
+	m.handleKey("space")
 	m.handleKey("enter")
 
 	if len(m.filter.Statuses) != 1 || m.filter.Statuses[0] != "blocked" {
@@ -472,6 +485,171 @@ func TestFilterEditorUpdatesFilterAndSummaries(t *testing.T) {
 	header := m.renderHeader()
 	if !strings.Contains(header, "filter status=blocked") || !strings.Contains(header, "1 issues") {
 		t.Fatalf("unexpected header after filter update: %s", header)
+	}
+}
+
+func TestGuidedFilterPickerSupportsMultiSelect(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		filterValuesByRequest: func(source store.FilterValueSource, key store.FilterValueKey, filter store.ListFilter) []string {
+			if source != store.FilterValueSourceAll {
+				t.Fatalf("unexpected source: %q", source)
+			}
+
+			if key != store.FilterValueKeyLabel {
+				t.Fatalf("unexpected key: %q", key)
+			}
+
+			return []string{"api", "ops", "docs"}
+		},
+		listByFilter: func(filter store.ListFilter) []issues.IssueSummary {
+			if len(filter.Labels) == 2 && filter.Labels[0] == "api" && filter.Labels[1] == "ops" {
+				return []issues.IssueSummary{
+					{ID: "tk-2", Title: "matching issue", Status: issues.StatusOpen, Type: issues.TypeTask},
+				}
+			}
+
+			return []issues.IssueSummary{
+				{ID: "tk-1", Title: "all issue", Status: issues.StatusOpen, Type: issues.TypeTask},
+				{ID: "tk-2", Title: "matching issue", Status: issues.StatusOpen, Type: issues.TypeTask},
+			}
+		},
+		details: map[string]issues.IssueDetailView{
+			"tk-1": {Issue: issues.Issue{ID: "tk-1", Title: "all issue", Status: issues.StatusOpen}},
+			"tk-2": {Issue: issues.Issue{ID: "tk-2", Title: "matching issue", Status: issues.StatusOpen}},
+		},
+		project: issues.ProjectGraphView{
+			Issues: []issues.IssueSummary{
+				{ID: "tk-1", Title: "all issue", Status: issues.StatusOpen},
+				{ID: "tk-2", Title: "matching issue", Status: issues.StatusOpen},
+			},
+		},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.handleKey("/")
+	m.handleKey("down")
+	m.handleKey("down")
+	m.handleKey("enter")
+	m.handleKey("space")
+	m.handleKey("down")
+	m.handleKey("space")
+	m.handleKey("enter")
+
+	if len(m.filter.Labels) != 2 || m.filter.Labels[0] != "api" || m.filter.Labels[1] != "ops" {
+		t.Fatalf("unexpected filter labels: %#v", m.filter.Labels)
+	}
+
+	applied := reader.listFilters[len(reader.listFilters)-1]
+	if len(applied.Labels) != 2 || applied.Labels[0] != "api" || applied.Labels[1] != "ops" {
+		t.Fatalf("unexpected applied filter: %#v", applied)
+	}
+
+	if summary := m.renderFilterPickerKeySummary(filterPickerKeyLabel); !strings.Contains(summary, "api, ops") {
+		t.Fatalf("expected multi-select summary to be visible, got %q", summary)
+	}
+}
+
+func TestGuidedFilterPickerLimitAndReset(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		allSummaries: []issues.IssueSummary{
+			{ID: "tk-1", Title: "issue", Status: issues.StatusOpen, Type: issues.TypeTask},
+		},
+		details: map[string]issues.IssueDetailView{
+			"tk-1": {Issue: issues.Issue{ID: "tk-1", Title: "issue", Status: issues.StatusOpen}},
+		},
+		project: issues.ProjectGraphView{
+			Issues: []issues.IssueSummary{{ID: "tk-1", Title: "issue", Status: issues.StatusOpen}},
+		},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{
+		Filter: store.ListFilter{
+			Statuses: []string{issues.StatusOpen},
+			Limit:    3,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.handleKey("/")
+	m.handleKey("down")
+	m.handleKey("down")
+	m.handleKey("down")
+	m.handleKey("down")
+	m.handleKey("enter")
+	m.handleKey("backspace")
+	m.handleKey("enter")
+
+	if m.filter.Limit != 0 {
+		t.Fatalf("expected empty limit input to clear the limit, got %#v", m.filter)
+	}
+
+	m.handleKey("/")
+	m.handleKey("down")
+	m.handleKey("down")
+	m.handleKey("down")
+	m.handleKey("down")
+	m.handleKey("down")
+	m.handleKey("enter")
+
+	if got := formatFilter(m.filter); got != "(none)" {
+		t.Fatalf("expected reset to clear filters, got %s", got)
+	}
+
+	last := reader.listFilters[len(reader.listFilters)-1]
+	if len(last.Statuses) != 0 || last.Limit != 0 {
+		t.Fatalf("expected reset reload to clear filters, got %#v", last)
+	}
+}
+
+func TestGuidedFilterPickerReadyModeOmitsAssigneeAndClearsExistingValues(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		readySummaries: []issues.IssueSummary{
+			{ID: "tk-1", Title: "ready", Status: issues.StatusOpen, Type: issues.TypeTask},
+		},
+		project: issues.ProjectGraphView{
+			Issues: []issues.IssueSummary{{ID: "tk-1", Title: "ready", Status: issues.StatusOpen}},
+		},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{
+		Filter: store.ListFilter{Assignees: []string{"alice"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(m.filter.Assignees) != 1 || m.filter.Assignees[0] != "alice" {
+		t.Fatalf("expected initial assignee filter to be present, got %#v", m.filter.Assignees)
+	}
+
+	m.handleKey("r")
+
+	if m.source != DataSourceReady {
+		t.Fatalf("expected ready source after toggle, got %q", m.source)
+	}
+
+	if len(m.filter.Assignees) != 0 {
+		t.Fatalf("expected ready mode to clear assignee filters, got %#v", m.filter.Assignees)
+	}
+
+	m.handleKey("/")
+
+	for _, option := range m.filterPickerOptions() {
+		if option.key == filterPickerKeyAssignee {
+			t.Fatalf("assignee should be omitted from ready-mode picker options: %#v", m.filterPickerOptions())
+		}
 	}
 }
 
