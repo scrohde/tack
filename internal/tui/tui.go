@@ -33,7 +33,6 @@ type summaryReader interface {
 	ListIssueSummaries(context.Context, store.ListFilter) ([]issues.IssueSummary, error)
 	ReadyIssueSummaries(context.Context, store.ListFilter) ([]issues.IssueSummary, error)
 	IssueDetailView(context.Context, string) (issues.IssueDetailView, error)
-	FocusedGraphView(context.Context, string) (issues.FocusedGraphView, error)
 	ProjectGraphView(context.Context) (issues.ProjectGraphView, error)
 	Close() error
 }
@@ -50,11 +49,10 @@ type detailTab int
 const (
 	tabDetails detailTab = iota
 	tabComments
-	tabFocusedGraph
 	tabProjectGraph
 )
 
-var detailTabNames = []string{"Details", "Comments", "Focused Graph", "Project Graph"}
+var detailTabNames = []string{"Details", "Comments", "Project Graph"}
 
 type model struct {
 	ctx      context.Context
@@ -76,13 +74,11 @@ type model struct {
 	filterInput       string
 
 	detailView       issues.IssueDetailView
-	focusedGraphView issues.FocusedGraphView
 	projectGraphView issues.ProjectGraphView
 
 	browserViewport      textViewport
 	detailsViewport      textViewport
 	commentsViewport     textViewport
-	focusedGraphViewport graphViewport
 	projectGraphViewport graphViewport
 
 	width  int
@@ -221,7 +217,7 @@ func (m *model) handleKey(key string) tea.Cmd {
 	case "ctrl+r":
 		m.refresh()
 	case "g":
-		m.activeTab = tabFocusedGraph
+		m.activeTab = tabProjectGraph
 		m.focus = paneDetail
 	case "G":
 		m.activeTab = tabProjectGraph
@@ -385,7 +381,7 @@ func (m *model) renderHeader() string {
 }
 
 func (m *model) renderFooter() string {
-	return "q quit  tab/left/right switch  j/k move or scroll  enter pin  / filter  g/G graphs  ? more"
+	return "q quit  tab/left/right switch  j/k move or scroll  enter pin  / filter  g/G graph  ? more"
 }
 
 func (m *model) renderExpandedHelp() string {
@@ -397,9 +393,9 @@ func (m *model) renderExpandedHelp() string {
 		"enter pins the selected issue in the detail pane",
 		"esc returns focus to the browser and clears the current pin",
 		"r toggles between all issues and ready issues, ctrl+r refreshes from disk",
-		"g opens Focused Graph, G opens Project Graph",
+		"g or G opens Project Graph",
 		"In Details and Comments with detail focus, j/k, up/down, pgup/pgdown, and ctrl+u/ctrl+d scroll",
-		"In graph tabs with detail focus, h/l pan horizontally while j/k and up/down pan vertically",
+		"In the graph tab with detail focus, h/l pan horizontally while j/k and up/down pan vertically",
 	}, "\n")
 }
 
@@ -445,8 +441,6 @@ func (m *model) renderActiveTabBody(width, height int) string {
 	switch m.activeTab {
 	case tabComments:
 		return m.renderTextViewport(&m.commentsViewport, height, m.renderCommentsTab())
-	case tabFocusedGraph:
-		return m.renderFocusedGraphTab(width, height)
 	case tabProjectGraph:
 		return m.renderProjectGraphTab(width, height)
 	default:
@@ -510,16 +504,6 @@ func (m *model) renderCommentsTab() string {
 	}
 
 	return strings.Join(lines, "\n")
-}
-
-func (m *model) renderFocusedGraphTab(width, height int) string {
-	if m.currentDetailID() == "" {
-		return "Select an issue to inspect."
-	}
-
-	content := renderFocusedGraph(m.focusedGraphView)
-
-	return m.renderGraphViewport(width, height, &m.focusedGraphViewport, content)
 }
 
 func (m *model) renderProjectGraphTab(width, height int) string {
@@ -624,10 +608,8 @@ func (m *model) reload() error {
 		m.selected = 0
 		m.pinnedID = ""
 		m.detailView = issues.IssueDetailView{}
-		m.focusedGraphView = issues.FocusedGraphView{}
 		m.resetTextViewport(tabDetails)
 		m.resetTextViewport(tabComments)
-		m.resetGraphViewport(tabFocusedGraph)
 	} else {
 		if m.selected >= len(m.summaries) {
 			m.selected = len(m.summaries) - 1
@@ -669,10 +651,8 @@ func (m *model) syncDetailViews() {
 	id := m.currentDetailID()
 	if id == "" {
 		m.detailView = issues.IssueDetailView{}
-		m.focusedGraphView = issues.FocusedGraphView{}
 		m.resetTextViewport(tabDetails)
 		m.resetTextViewport(tabComments)
-		m.resetGraphViewport(tabFocusedGraph)
 		m.resetGraphViewport(tabProjectGraph)
 
 		return
@@ -684,17 +664,9 @@ func (m *model) syncDetailViews() {
 		return
 	}
 
-	focusedGraphView, err := m.reader.FocusedGraphView(m.ctx, id)
-	if err != nil {
-		m.lastError = err
-		return
-	}
-
 	m.detailView = detailView
-	m.focusedGraphView = focusedGraphView
 	m.resetTextViewport(tabDetails)
 	m.resetTextViewport(tabComments)
-	m.resetGraphViewport(tabFocusedGraph)
 	m.resetGraphViewport(tabProjectGraph)
 	m.lastError = nil
 }

@@ -40,9 +40,7 @@ func (m *model) handleGraphViewportKey(key string) bool {
 		return false
 	}
 
-	switch m.activeTab {
-	case tabFocusedGraph, tabProjectGraph:
-	default:
+	if m.activeTab != tabProjectGraph {
 		return false
 	}
 
@@ -76,21 +74,15 @@ func (m *model) handleGraphViewportKey(key string) bool {
 }
 
 func (m *model) activeGraphViewport() *graphViewport {
-	switch m.activeTab {
-	case tabFocusedGraph:
-		return &m.focusedGraphViewport
-	case tabProjectGraph:
+	if m.activeTab == tabProjectGraph {
 		return &m.projectGraphViewport
-	default:
-		return nil
 	}
+
+	return nil
 }
 
 func (m *model) resetGraphViewport(tab detailTab) {
-	switch tab {
-	case tabFocusedGraph:
-		m.focusedGraphViewport = graphViewport{}
-	case tabProjectGraph:
+	if tab == tabProjectGraph {
 		m.projectGraphViewport = graphViewport{}
 	}
 }

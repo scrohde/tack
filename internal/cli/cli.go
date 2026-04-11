@@ -1523,8 +1523,8 @@ func printTUIUsage(w io.Writer, fs *flag.FlagSet) error {
   /            open inline filter editor
   r            toggle list and ready views
   enter        pin or open the selected issue
-  g            open the focused graph tab
-  G            open the project graph tab
+  g            open the graph tab
+  G            open the graph tab
   esc          clear filter input or return focus
   ctrl+r       refresh data from disk`)
 		if err != nil {

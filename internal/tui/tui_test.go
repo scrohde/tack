@@ -96,10 +96,6 @@ func TestSelectionChangesRefreshActiveDetailWhenUnpinned(t *testing.T) {
 	if m.detailView.Issue.ID != "tk-2" {
 		t.Fatalf("expected detail to follow selection, got %#v", m.detailView)
 	}
-
-	if m.focusedGraphView.SelectedID != "tk-2" {
-		t.Fatalf("expected focused graph to follow selection, got %#v", m.focusedGraphView)
-	}
 }
 
 func TestTabNavigationAndEscapeAreDeterministic(t *testing.T) {
@@ -141,8 +137,8 @@ func TestTabNavigationAndEscapeAreDeterministic(t *testing.T) {
 
 	m.handleKey("right")
 
-	if m.activeTab != tabFocusedGraph {
-		t.Fatalf("expected focused graph tab, got %d", m.activeTab)
+	if m.activeTab != tabProjectGraph {
+		t.Fatalf("expected project graph tab, got %d", m.activeTab)
 	}
 
 	m.handleKey("left")
@@ -189,7 +185,6 @@ func TestArrowNavigationWrapsAcrossDetailTabs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m.handleKey("right")
 	m.handleKey("right")
 	m.handleKey("right")
 	m.handleKey("right")
@@ -267,7 +262,7 @@ func TestArrowKeysMirrorTabNavigation(t *testing.T) {
 			firstKey:      "right",
 			secondKey:     "tab",
 			expectedFocus: paneDetail,
-			expectedTab:   tabFocusedGraph,
+			expectedTab:   tabProjectGraph,
 		},
 		{
 			name:          "left matches shift+tab from details",
@@ -334,7 +329,7 @@ func TestHelpTextMentionsArrowNavigationAndGraphPanning(t *testing.T) {
 	}
 }
 
-func TestGraphTabsKeepHorizontalPanningOnHAndLOnly(t *testing.T) {
+func TestGraphTabKeepsHorizontalPanningOnHAndLOnly(t *testing.T) {
 	t.Parallel()
 
 	reader := &fakeReader{
@@ -373,36 +368,36 @@ func TestGraphTabsKeepHorizontalPanningOnHAndLOnly(t *testing.T) {
 	}
 
 	m.focus = paneDetail
-	m.activeTab = tabFocusedGraph
+	m.activeTab = tabProjectGraph
 
 	m.handleKey("l")
 
-	if m.focusedGraphViewport.x == 0 {
-		t.Fatalf("expected l to pan the focused graph horizontally, got %#v", m.focusedGraphViewport)
+	if m.projectGraphViewport.x == 0 {
+		t.Fatalf("expected l to pan the project graph horizontally, got %#v", m.projectGraphViewport)
 	}
 
-	xAfterL := m.focusedGraphViewport.x
+	xAfterL := m.projectGraphViewport.x
 	m.handleKey("right")
 
+	if m.activeTab != tabDetails {
+		t.Fatalf("expected right to wrap back to details, got tab=%d", m.activeTab)
+	}
+
+	if m.projectGraphViewport.x != xAfterL {
+		t.Fatalf("expected right to leave project graph pan unchanged, got %#v", m.projectGraphViewport)
+	}
+
+	m.handleKey("g")
+
 	if m.activeTab != tabProjectGraph {
-		t.Fatalf("expected right to advance to project graph, got tab=%d", m.activeTab)
+		t.Fatalf("expected g to reopen the project graph, got tab=%d", m.activeTab)
 	}
 
-	if m.focusedGraphViewport.x != xAfterL {
-		t.Fatalf("expected right to leave focused graph pan unchanged, got %#v", m.focusedGraphViewport)
-	}
-
-	m.handleKey("left")
-
-	if m.activeTab != tabFocusedGraph {
-		t.Fatalf("expected left to reverse back to focused graph, got tab=%d", m.activeTab)
-	}
-
-	xBeforeH := m.focusedGraphViewport.x
+	xBeforeH := m.projectGraphViewport.x
 	m.handleKey("h")
 
-	if m.focusedGraphViewport.x >= xBeforeH {
-		t.Fatalf("expected h to pan the focused graph back left, before=%d after=%d", xBeforeH, m.focusedGraphViewport.x)
+	if m.projectGraphViewport.x >= xBeforeH {
+		t.Fatalf("expected h to pan the project graph back left, before=%d after=%d", xBeforeH, m.projectGraphViewport.x)
 	}
 }
 
@@ -735,73 +730,6 @@ func TestRenderReservesSpaceForFooterAndHelp(t *testing.T) {
 
 	if !strings.Contains(rendered, "q quit") || !strings.Contains(rendered, "Controls") {
 		t.Fatalf("expected footer and help to remain visible, got:\n%s", rendered)
-	}
-}
-
-func TestFocusedGraphTabRendersStructuredLayoutAndPansViewport(t *testing.T) {
-	t.Parallel()
-
-	reader := &fakeReader{
-		allSummaries: []issues.IssueSummary{
-			{ID: "tk-2", Title: "Selected issue with a long title", Status: issues.StatusOpen, Type: issues.TypeTask},
-		},
-		details: map[string]issues.IssueDetailView{
-			"tk-2": {Issue: issues.Issue{ID: "tk-2", Title: "Selected issue with a long title", Status: issues.StatusOpen}},
-		},
-		focused: map[string]issues.FocusedGraphView{
-			"tk-2": {
-				SelectedID:   "tk-2",
-				ParentID:     "tk-1",
-				BlockedByIDs: []string{"tk-3"},
-				BlocksIDs:    []string{"tk-4"},
-				ChildIDs:     []string{"tk-5"},
-				NodeSummaries: map[string]issues.IssueSummary{
-					"tk-1": {ID: "tk-1", Title: "Parent epic", Status: issues.StatusClosed, Type: issues.TypeEpic},
-					"tk-2": {ID: "tk-2", Title: "Selected issue with a long title", Status: issues.StatusOpen, Type: issues.TypeTask},
-					"tk-3": {ID: "tk-3", Title: "Blocking bug", Status: issues.StatusBlocked, Type: issues.TypeBug},
-					"tk-4": {ID: "tk-4", Title: "Downstream feature", Status: issues.StatusOpen, Type: issues.TypeFeature},
-					"tk-5": {ID: "tk-5", Title: "Child task", Status: issues.StatusOpen, Type: issues.TypeTask},
-				},
-			},
-		},
-		project: issues.ProjectGraphView{
-			Issues: []issues.IssueSummary{{ID: "tk-2", Title: "Selected issue with a long title", Status: issues.StatusOpen}},
-		},
-	}
-
-	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	m.focus = paneDetail
-	m.activeTab = tabFocusedGraph
-
-	rendered := m.renderFocusedGraphTab(72, 18)
-	if !strings.Contains(rendered, "Legend:") || !strings.Contains(rendered, "Parent") || !strings.Contains(rendered, "Selected") {
-		t.Fatalf("expected focused graph scaffolding, got:\n%s", rendered)
-	}
-
-	if !strings.Contains(rendered, "┌") || !strings.Contains(rendered, "▶") || !strings.Contains(rendered, "▼") || !strings.Contains(rendered, "┈") {
-		t.Fatalf("expected box-drawing layout with closed styling, got:\n%s", rendered)
-	}
-
-	narrow := m.renderFocusedGraphTab(24, 10)
-	selectedBefore := m.selected
-	m.handleKey("l")
-	m.handleKey("j")
-
-	if m.selected != selectedBefore {
-		t.Fatalf("graph viewport pan should not move the browser selection: before=%d after=%d", selectedBefore, m.selected)
-	}
-
-	if m.focusedGraphViewport.x == 0 || m.focusedGraphViewport.y == 0 {
-		t.Fatalf("expected viewport offsets to move after panning, got %#v", m.focusedGraphViewport)
-	}
-
-	panned := m.renderFocusedGraphTab(24, 10)
-	if narrow == panned {
-		t.Fatalf("expected viewport render to change after panning:\n%s", panned)
 	}
 }
 
