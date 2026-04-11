@@ -33,6 +33,7 @@ type StartupOptions struct {
 type summaryReader interface {
 	ListIssueSummaries(context.Context, store.ListFilter) ([]issues.IssueSummary, error)
 	ReadyIssueSummaries(context.Context, store.ListFilter) ([]issues.IssueSummary, error)
+	ListFilterValues(context.Context, store.FilterValueSource, store.FilterValueKey, store.ListFilter) ([]string, error)
 	IssueDetailView(context.Context, string) (issues.IssueDetailView, error)
 	ProjectGraphView(context.Context) (issues.ProjectGraphView, error)
 	Close() error
@@ -657,6 +658,15 @@ func (m *model) loadSummaries() ([]issues.IssueSummary, error) {
 	default:
 		return m.reader.ListIssueSummaries(m.ctx, m.filter)
 	}
+}
+
+func (m *model) filterOptions(key store.FilterValueKey) ([]string, error) {
+	source := store.FilterValueSourceAll
+	if m.source == DataSourceReady {
+		source = store.FilterValueSourceReady
+	}
+
+	return m.reader.ListFilterValues(m.ctx, source, key, m.filter)
 }
 
 func (m *model) syncDetailViews() {

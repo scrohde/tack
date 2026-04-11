@@ -450,6 +450,213 @@ func TestReadyFiltersSupportMultipleValues(t *testing.T) {
 	}
 }
 
+func TestListFilterValuesRespectOtherFilters(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	apiBug, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "api bug",
+		Description: "body",
+		Type:        issues.TypeBug,
+		Priority:    "medium",
+		Labels:      []string{"api"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	opsBug, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "ops bug",
+		Description: "body",
+		Type:        issues.TypeBug,
+		Priority:    "medium",
+		Labels:      []string{"ops"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	closedTask, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "closed task",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+		Labels:      []string{"api"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bobAssignee := "bob"
+	closedStatus := issues.StatusClosed
+
+	for _, issue := range []string{apiBug.ID, opsBug.ID} {
+		_, err = s.UpdateIssue(ctx, issue, store.UpdateIssueInput{Assignee: &bobAssignee}, "alice")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, err = s.UpdateIssue(ctx, closedTask.ID, store.UpdateIssueInput{Status: &closedStatus}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	filter := store.ListFilter{
+		Statuses:  []string{issues.StatusOpen},
+		Types:     []string{issues.TypeBug},
+		Labels:    []string{"api"},
+		Assignees: []string{"bob"},
+	}
+
+	statusValues, err := s.ListFilterValues(ctx, store.FilterValueSourceAll, store.FilterValueKeyStatus, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(statusValues, []string{issues.StatusOpen}) {
+		t.Fatalf("unexpected status values: %#v", statusValues)
+	}
+
+	typeValues, err := s.ListFilterValues(ctx, store.FilterValueSourceAll, store.FilterValueKeyType, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(typeValues, []string{issues.TypeBug}) {
+		t.Fatalf("unexpected type values: %#v", typeValues)
+	}
+
+	labelValues, err := s.ListFilterValues(ctx, store.FilterValueSourceAll, store.FilterValueKeyLabel, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(labelValues, []string{"api", "ops"}) {
+		t.Fatalf("unexpected label values: %#v", labelValues)
+	}
+
+	assigneeValues, err := s.ListFilterValues(ctx, store.FilterValueSourceAll, store.FilterValueKeyAssignee, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(assigneeValues, []string{"bob"}) {
+		t.Fatalf("unexpected assignee values: %#v", assigneeValues)
+	}
+}
+
+func TestReadyFilterValuesRespectReadySource(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	readyOne, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "ready one",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+		Labels:      []string{"ui"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	readyTwo, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "ready two",
+		Description: "body",
+		Type:        issues.TypeBug,
+		Priority:    "medium",
+		Labels:      []string{"backend"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blocked, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "blocked",
+		Description: "body",
+		Type:        issues.TypeBug,
+		Priority:    "medium",
+		Labels:      []string{"ui"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	claimed, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "claimed",
+		Description: "body",
+		Type:        issues.TypeBug,
+		Priority:    "medium",
+		Labels:      []string{"ui"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blockedStatus := issues.StatusBlocked
+
+	_, err = s.UpdateIssue(ctx, blocked.ID, store.UpdateIssueInput{Status: &blockedStatus}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.UpdateIssue(ctx, claimed.ID, store.UpdateIssueInput{Claim: true}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	filter := store.ListFilter{
+		Statuses: []string{issues.StatusOpen, issues.StatusBlocked},
+		Types:    []string{issues.TypeTask, issues.TypeBug},
+		Labels:   []string{"ui"},
+	}
+
+	labelValues, err := s.ListFilterValues(ctx, store.FilterValueSourceReady, store.FilterValueKeyLabel, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(labelValues, []string{"backend", "ui"}) {
+		t.Fatalf("unexpected ready label values: %#v", labelValues)
+	}
+
+	statusValues, err := s.ListFilterValues(ctx, store.FilterValueSourceReady, store.FilterValueKeyStatus, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(statusValues, []string{issues.StatusOpen}) {
+		t.Fatalf("unexpected ready status values: %#v", statusValues)
+	}
+
+	assigneeValues, err := s.ListFilterValues(ctx, store.FilterValueSourceReady, store.FilterValueKeyAssignee, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(assigneeValues) != 0 {
+		t.Fatalf("expected no ready assignee values, got %#v", assigneeValues)
+	}
+
+	typeValues, err := s.ListFilterValues(ctx, store.FilterValueSourceReady, store.FilterValueKeyType, store.ListFilter{
+		Labels: []string{"ui", "backend"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(typeValues, []string{issues.TypeTask, issues.TypeBug}) {
+		t.Fatalf("unexpected ready type values: %#v", typeValues)
+	}
+
+	if readyOne.ID == readyTwo.ID {
+		t.Fatal("expected distinct ready issues")
+	}
+}
+
 func TestIssueDetailViewIncludesCommentsDependenciesAndRelatedSummaries(t *testing.T) {
 	ctx := testutil.Context(t)
 	repo := testutil.TempRepo(t)

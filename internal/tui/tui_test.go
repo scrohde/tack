@@ -475,6 +475,56 @@ func TestFilterEditorUpdatesFilterAndSummaries(t *testing.T) {
 	}
 }
 
+func TestFilterOptionsUseCurrentSourceAndFilter(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		readySummaries: []issues.IssueSummary{
+			{ID: "tk-1", Title: "ready", Status: issues.StatusOpen, Type: issues.TypeTask},
+		},
+		filterValuesByRequest: func(source store.FilterValueSource, key store.FilterValueKey, filter store.ListFilter) []string {
+			if source != store.FilterValueSourceReady {
+				t.Fatalf("unexpected source: %q", source)
+			}
+
+			if key != store.FilterValueKeyLabel {
+				t.Fatalf("unexpected key: %q", key)
+			}
+
+			if len(filter.Statuses) != 1 || filter.Statuses[0] != issues.StatusOpen {
+				t.Fatalf("unexpected filter statuses: %#v", filter)
+			}
+
+			if len(filter.Types) != 1 || filter.Types[0] != issues.TypeTask {
+				t.Fatalf("unexpected filter types: %#v", filter)
+			}
+
+			return []string{"backend", "ui"}
+		},
+		project: issues.ProjectGraphView{},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{
+		Source: DataSourceReady,
+		Filter: store.ListFilter{
+			Statuses: []string{issues.StatusOpen},
+			Types:    []string{issues.TypeTask},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	values, err := m.filterOptions(store.FilterValueKeyLabel)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(values) != 2 || values[0] != "backend" || values[1] != "ui" {
+		t.Fatalf("unexpected filter values: %#v", values)
+	}
+}
+
 func TestDetailsAndCommentsTabsRenderTypedDetailContext(t *testing.T) {
 	t.Parallel()
 
@@ -908,13 +958,16 @@ type fakeReader struct {
 	listFilters  []store.ListFilter
 	readyFilters []store.ListFilter
 
-	allSummaries   []issues.IssueSummary
-	readySummaries []issues.IssueSummary
-	listByFilter   func(store.ListFilter) []issues.IssueSummary
-	readyByFilter  func(store.ListFilter) []issues.IssueSummary
-	details        map[string]issues.IssueDetailView
-	focused        map[string]issues.FocusedGraphView
-	project        issues.ProjectGraphView
+	filterValueRequests []filterValueRequest
+
+	allSummaries          []issues.IssueSummary
+	readySummaries        []issues.IssueSummary
+	listByFilter          func(store.ListFilter) []issues.IssueSummary
+	readyByFilter         func(store.ListFilter) []issues.IssueSummary
+	filterValuesByRequest func(store.FilterValueSource, store.FilterValueKey, store.ListFilter) []string
+	details               map[string]issues.IssueDetailView
+	focused               map[string]issues.FocusedGraphView
+	project               issues.ProjectGraphView
 }
 
 func (f *fakeReader) ListIssueSummaries(_ context.Context, filter store.ListFilter) ([]issues.IssueSummary, error) {
@@ -939,6 +992,20 @@ func (f *fakeReader) ReadyIssueSummaries(_ context.Context, filter store.ListFil
 	return cloneSummaries(f.readySummaries), nil
 }
 
+func (f *fakeReader) ListFilterValues(_ context.Context, source store.FilterValueSource, key store.FilterValueKey, filter store.ListFilter) ([]string, error) {
+	f.filterValueRequests = append(f.filterValueRequests, filterValueRequest{
+		source: source,
+		key:    key,
+		filter: filter,
+	})
+
+	if f.filterValuesByRequest != nil {
+		return append([]string(nil), f.filterValuesByRequest(source, key, filter)...), nil
+	}
+
+	return nil, nil
+}
+
 func (f *fakeReader) IssueDetailView(_ context.Context, id string) (issues.IssueDetailView, error) {
 	return f.details[id], nil
 }
@@ -953,6 +1020,12 @@ func (f *fakeReader) ProjectGraphView(context.Context) (issues.ProjectGraphView,
 
 func (f *fakeReader) Close() error {
 	return nil
+}
+
+type filterValueRequest struct {
+	source store.FilterValueSource
+	key    store.FilterValueKey
+	filter store.ListFilter
 }
 
 func cloneSummaries(in []issues.IssueSummary) []issues.IssueSummary {

@@ -76,6 +76,37 @@ type ListFilter struct {
 	Limit     int
 }
 
+type FilterValueSource string
+
+const (
+	FilterValueSourceAll   FilterValueSource = "all"
+	FilterValueSourceReady FilterValueSource = "ready"
+)
+
+type FilterValueKey string
+
+const (
+	FilterValueKeyStatus   FilterValueKey = "status"
+	FilterValueKeyType     FilterValueKey = "type"
+	FilterValueKeyLabel    FilterValueKey = "label"
+	FilterValueKeyAssignee FilterValueKey = "assignee"
+)
+
+var (
+	orderedFilterStatuses = []string{
+		issues.StatusOpen,
+		issues.StatusInProgress,
+		issues.StatusBlocked,
+		issues.StatusClosed,
+	}
+	orderedFilterTypes = []string{
+		issues.TypeEpic,
+		issues.TypeTask,
+		issues.TypeBug,
+		issues.TypeFeature,
+	}
+)
+
 func validateReadyFilter(filter ListFilter) error {
 	if len(filterAssignees(filter)) > 0 {
 		return errors.New("ready queries do not support assignee filters")
@@ -179,6 +210,48 @@ func sqlPlaceholders(n int) string {
 	}
 
 	return strings.TrimSuffix(strings.Repeat("?, ", n), ", ")
+}
+
+func filterWithoutKey(filter ListFilter, key FilterValueKey) ListFilter {
+	filter.Statuses = slices.Clone(filter.Statuses)
+	filter.Assignees = slices.Clone(filter.Assignees)
+	filter.Labels = slices.Clone(filter.Labels)
+	filter.Types = slices.Clone(filter.Types)
+
+	switch key {
+	case FilterValueKeyStatus:
+		filter.Statuses = nil
+	case FilterValueKeyType:
+		filter.Types = nil
+	case FilterValueKeyLabel:
+		filter.Labels = nil
+	case FilterValueKeyAssignee:
+		filter.Assignees = nil
+	}
+
+	return filter
+}
+
+func orderedPresentValues(order []string, present map[string]struct{}) []string {
+	values := make([]string, 0, len(order))
+	for _, value := range order {
+		if _, ok := present[value]; ok {
+			values = append(values, value)
+		}
+	}
+
+	return values
+}
+
+func distinctSortedValues(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	unique := normalizedFilterValues(values, nil)
+	slices.Sort(unique)
+
+	return unique
 }
 
 func Open(path string) (*Store, error) {
@@ -671,6 +744,65 @@ func (s *Store) ListIssueSummaries(ctx context.Context, filter ListFilter) ([]is
 	defer closeRows(rows)
 
 	return scanIssueSummaries(ctx, rows, s)
+}
+
+func (s *Store) ListFilterValues(ctx context.Context, source FilterValueSource, key FilterValueKey, filter ListFilter) ([]string, error) {
+	filter = filterWithoutKey(filter, key)
+
+	var (
+		summaries []issues.IssueSummary
+		err       error
+	)
+
+	switch source {
+	case FilterValueSourceAll:
+		summaries, err = s.ListIssueSummaries(ctx, filter)
+	case FilterValueSourceReady:
+		summaries, err = s.ReadyIssueSummaries(ctx, filter)
+	default:
+		return nil, fmt.Errorf("unknown filter value source %q", source)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	switch key {
+	case FilterValueKeyStatus:
+		present := make(map[string]struct{}, len(summaries))
+		for _, summary := range summaries {
+			present[summary.Status] = struct{}{}
+		}
+
+		return orderedPresentValues(orderedFilterStatuses, present), nil
+	case FilterValueKeyType:
+		present := make(map[string]struct{}, len(summaries))
+		for _, summary := range summaries {
+			present[summary.Type] = struct{}{}
+		}
+
+		return orderedPresentValues(orderedFilterTypes, present), nil
+	case FilterValueKeyLabel:
+		values := make([]string, 0)
+		for _, summary := range summaries {
+			values = append(values, summary.Labels...)
+		}
+
+		return distinctSortedValues(values), nil
+	case FilterValueKeyAssignee:
+		values := make([]string, 0, len(summaries))
+		for _, summary := range summaries {
+			if summary.Assignee == "" {
+				continue
+			}
+
+			values = append(values, summary.Assignee)
+		}
+
+		return distinctSortedValues(values), nil
+	default:
+		return nil, fmt.Errorf("unknown filter value key %q", key)
+	}
 }
 
 func (s *Store) ReadyIssues(ctx context.Context, filter ListFilter) ([]issues.Issue, error) {
