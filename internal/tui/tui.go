@@ -283,7 +283,8 @@ func (m *model) render() string {
 	parts := []string{header}
 
 	if m.filterPicker.mode != filterPickerHidden {
-		parts = append(parts, filterStyle.Render(m.renderFilterPicker()))
+		filterMaxHeight := m.maxFilterPickerHeight(header, footer, help)
+		parts = append(parts, filterStyle.Render(m.renderFilterPicker(filterMaxHeight)))
 	}
 
 	staticHeight := renderedHeight(parts...) + lipgloss.Height(footer)
@@ -326,6 +327,17 @@ func (m *model) render() string {
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, rendered...)
+}
+
+func (m *model) maxFilterPickerHeight(header, footer, help string) int {
+	baseHeight := renderedHeight(header, footer, help)
+
+	available := m.height - baseHeight - 1
+	if available < 3 {
+		return 3
+	}
+
+	return available
 }
 
 func (m *model) renderCompactLayout(height int) string {
@@ -935,11 +947,12 @@ func (m *model) hasSummary(id string) bool {
 	return false
 }
 
-func (m *model) renderFilterPicker() string {
+func (m *model) renderFilterPicker(maxHeight int) string {
 	lines := []string{
 		sectionTitleStyle.Render("Guided Filters"),
 		"Current: " + formatFilter(m.filter),
 	}
+	contentHeight := maxInt(1, maxHeight-filterStyle.GetVerticalFrameSize())
 
 	switch m.filterPicker.mode {
 	case filterPickerValues:
@@ -953,7 +966,10 @@ func (m *model) renderFilterPicker() string {
 			return strings.Join(lines, "\n")
 		}
 
-		for i, value := range m.filterPicker.values {
+		start, end := listViewportWindow(len(m.filterPicker.values), m.filterPicker.valueIndex, maxInt(1, contentHeight-len(lines)))
+		for i := start; i < end; i++ {
+			value := m.filterPicker.values[i]
+
 			marker := "  "
 			if i == clampInt(m.filterPicker.valueIndex, 0, len(m.filterPicker.values)-1) {
 				marker = "> "
@@ -976,7 +992,11 @@ func (m *model) renderFilterPicker() string {
 		lines = append(lines, "Choose a filter key to edit.")
 
 		options := m.filterPickerOptions()
-		for i, option := range options {
+
+		start, end := listViewportWindow(len(options), m.filterPicker.keyIndex, maxInt(1, contentHeight-len(lines)))
+		for i := start; i < end; i++ {
+			option := options[i]
+
 			marker := "  "
 			if i == clampInt(m.filterPicker.keyIndex, 0, len(options)-1) {
 				marker = "> "
@@ -1534,6 +1554,28 @@ func renderedHeight(parts ...string) int {
 	}
 
 	return total
+}
+
+func listViewportWindow(total, selected, visible int) (int, int) {
+	if total <= 0 {
+		return 0, 0
+	}
+
+	visible = maxInt(1, visible)
+	selected = clampInt(selected, 0, total-1)
+
+	if total <= visible {
+		return 0, total
+	}
+
+	start := 0
+	if selected >= visible {
+		start = selected - visible + 1
+	}
+
+	start = clampInt(start, 0, total-visible)
+
+	return start, start + visible
 }
 
 var (

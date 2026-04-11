@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -552,6 +553,64 @@ func TestGuidedFilterPickerSupportsMultiSelect(t *testing.T) {
 
 	if summary := m.renderFilterPickerKeySummary(filterPickerKeyLabel); !strings.Contains(summary, "api, ops") {
 		t.Fatalf("expected multi-select summary to be visible, got %q", summary)
+	}
+}
+
+func TestGuidedFilterPickerScrollsLongValueLists(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		allSummaries: []issues.IssueSummary{
+			{ID: "tk-1", Title: "issue", Status: issues.StatusOpen, Type: issues.TypeTask},
+		},
+		filterValuesByRequest: func(source store.FilterValueSource, key store.FilterValueKey, filter store.ListFilter) []string {
+			if key != store.FilterValueKeyLabel {
+				t.Fatalf("unexpected key: %q", key)
+			}
+
+			values := make([]string, 0, 12)
+			for i := 1; i <= 12; i++ {
+				values = append(values, "label-"+fmt.Sprintf("%02d", i))
+			}
+
+			return values
+		},
+		details: map[string]issues.IssueDetailView{
+			"tk-1": {Issue: issues.Issue{ID: "tk-1", Title: "issue", Status: issues.StatusOpen}},
+		},
+		project: issues.ProjectGraphView{
+			Issues: []issues.IssueSummary{{ID: "tk-1", Title: "issue", Status: issues.StatusOpen}},
+		},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.width = 80
+	m.height = 12
+
+	m.handleKey("/")
+	m.handleKey("down")
+	m.handleKey("down")
+	m.handleKey("enter")
+
+	for i := 0; i < 9; i++ {
+		m.handleKey("down")
+	}
+
+	rendered := ansiPattern.ReplaceAllString(m.render(), "")
+	if lipgloss.Height(rendered) > m.height {
+		t.Fatalf("expected guided filter panel to stay within the terminal height, got %d lines for height %d:\n%s", lipgloss.Height(rendered), m.height, rendered)
+	}
+
+	if !strings.Contains(rendered, "> [ ] label-10") {
+		t.Fatalf("expected the selected off-screen value to remain visible, got:\n%s", rendered)
+	}
+
+	if strings.Contains(rendered, "label-01") {
+		t.Fatalf("expected early values to scroll out of view once the selection moved down, got:\n%s", rendered)
 	}
 }
 
