@@ -551,6 +551,29 @@ func TestTUIHelpMentionsSingleGraphTab(t *testing.T) {
 	}
 }
 
+func TestTUIHelpMentionsGuidedFilters(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+
+	out, err := runCLIBytes(repo, "tui", "--help")
+	if err != nil {
+		t.Fatalf("tui help failed: %v", err)
+	}
+
+	rendered := string(out)
+	if !strings.Contains(rendered, "/            open guided filter picker") {
+		t.Fatalf("expected tui help to document the guided filter picker, got %q", rendered)
+	}
+
+	if !strings.Contains(rendered, "esc          close the picker or return focus") {
+		t.Fatalf("expected tui help to document picker exit behavior, got %q", rendered)
+	}
+
+	if strings.Contains(rendered, "inline filter editor") || strings.Contains(rendered, "clear filter input") {
+		t.Fatalf("expected tui help to drop inline editor wording, got %q", rendered)
+	}
+}
+
 func TestCommandsRequireExpectedPositionalArgs(t *testing.T) {
 	repo := testutil.TempRepo(t)
 	testutil.Chdir(t, repo)

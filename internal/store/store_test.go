@@ -1179,12 +1179,14 @@ func TestReadyRejectsAssigneeFilters(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = s.ReadyIssues(ctx, store.ListFilter{Assignees: []string{"alice"}})
+	filter := store.ListFilter{Assignees: []string{" ", "alice", "bob", "alice"}}
+
+	_, err = s.ReadyIssues(ctx, filter)
 	if err == nil || !strings.Contains(err.Error(), "do not support assignee filters") {
 		t.Fatalf("expected ready issue assignee filter rejection, got %v", err)
 	}
 
-	_, err = s.ReadyIssueSummaries(ctx, store.ListFilter{Assignees: []string{"alice"}})
+	_, err = s.ReadyIssueSummaries(ctx, filter)
 	if err == nil || !strings.Contains(err.Error(), "do not support assignee filters") {
 		t.Fatalf("expected ready summary assignee filter rejection, got %v", err)
 	}

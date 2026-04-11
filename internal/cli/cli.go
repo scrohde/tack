@@ -1528,12 +1528,12 @@ func printTUIUsage(w io.Writer, fs *flag.FlagSet) error {
   tab          switch panes or tabs
   shift+tab    switch panes or tabs in reverse
   j/k, arrows  move selection
-  /            open inline filter editor
+  /            open guided filter picker
   r            toggle list and ready views
   enter        pin or open the selected issue
   g            open the graph tab
   G            open the graph tab
-  esc          clear filter input or return focus
+  esc          close the picker or return focus
   ctrl+r       refresh data from disk`)
 		if err != nil {
 			return err
