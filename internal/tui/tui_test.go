@@ -324,6 +324,10 @@ func TestHelpTextMentionsArrowNavigationAndGraphPanning(t *testing.T) {
 		t.Fatalf("expected help to mention left/right navigation, got:\n%s", help)
 	}
 
+	if !strings.Contains(help, "g or G opens Project Graph") {
+		t.Fatalf("expected help to mention the single graph tab, got:\n%s", help)
+	}
+
 	if !strings.Contains(help, "h/l pan horizontally") {
 		t.Fatalf("expected help to mention h/l graph panning, got:\n%s", help)
 	}
@@ -398,6 +402,13 @@ func TestGraphTabKeepsHorizontalPanningOnHAndLOnly(t *testing.T) {
 
 	if m.projectGraphViewport.x >= xBeforeH {
 		t.Fatalf("expected h to pan the project graph back left, before=%d after=%d", xBeforeH, m.projectGraphViewport.x)
+	}
+
+	m.activeTab = tabDetails
+	m.handleKey("G")
+
+	if m.activeTab != tabProjectGraph {
+		t.Fatalf("expected G to open the project graph, got tab=%d", m.activeTab)
 	}
 }
 

@@ -532,6 +532,25 @@ func TestHelpCommandMatchesFlagHelp(t *testing.T) {
 	}
 }
 
+func TestTUIHelpMentionsSingleGraphTab(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+
+	out, err := runCLIBytes(repo, "tui", "--help")
+	if err != nil {
+		t.Fatalf("tui help failed: %v", err)
+	}
+
+	rendered := string(out)
+	if !strings.Contains(rendered, "g            open the graph tab") || !strings.Contains(rendered, "G            open the graph tab") {
+		t.Fatalf("expected tui help to document the single graph tab, got %q", rendered)
+	}
+
+	if strings.Contains(rendered, "focused graph") {
+		t.Fatalf("expected tui help to drop focused graph wording, got %q", rendered)
+	}
+}
+
 func TestCommandsRequireExpectedPositionalArgs(t *testing.T) {
 	repo := testutil.TempRepo(t)
 	testutil.Chdir(t, repo)

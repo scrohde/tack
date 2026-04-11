@@ -366,56 +366,108 @@ func TestIssueDetailViewIncludesCommentsDependenciesAndRelatedSummaries(t *testi
 }
 
 func TestIssueDetailViewDerivesLatestTransitionReasons(t *testing.T) {
-	ctx := testutil.Context(t)
-	repo := testutil.TempRepo(t)
-	s := testutil.InitStore(t, repo)
+	t.Parallel()
 
-	target, err := s.CreateIssue(ctx, store.CreateIssueInput{
-		Title:       "target",
-		Description: "body",
-		Type:        issues.TypeTask,
-		Priority:    "medium",
-	}, "alice")
-	if err != nil {
-		t.Fatal(err)
+	type transition struct {
+		kind   string
+		reason string
 	}
 
-	_, err = s.CloseIssue(ctx, target.ID, "", "alice")
-	if err != nil {
-		t.Fatal(err)
+	testCases := []struct {
+		name        string
+		transitions []transition
+		wantClose   string
+		wantReopen  string
+	}{
+		{
+			name: "close reason only",
+			transitions: []transition{
+				{kind: "close", reason: "done"},
+			},
+			wantClose: "done",
+		},
+		{
+			name: "reopen reason only",
+			transitions: []transition{
+				{kind: "close", reason: ""},
+				{kind: "reopen", reason: "needed more work"},
+			},
+			wantReopen: "needed more work",
+		},
+		{
+			name: "both reasons",
+			transitions: []transition{
+				{kind: "close", reason: "done"},
+				{kind: "reopen", reason: "follow-up requested"},
+			},
+			wantClose:  "done",
+			wantReopen: "follow-up requested",
+		},
+		{
+			name: "blank reasons stay omitted",
+			transitions: []transition{
+				{kind: "close", reason: ""},
+				{kind: "reopen", reason: " "},
+			},
+		},
+		{
+			name: "repeated transitions use latest non-empty reason",
+			transitions: []transition{
+				{kind: "close", reason: ""},
+				{kind: "reopen", reason: "needed more work"},
+				{kind: "close", reason: "initial fix landed"},
+				{kind: "reopen", reason: " "},
+				{kind: "close", reason: "verified and done"},
+			},
+			wantClose:  "verified and done",
+			wantReopen: "needed more work",
+		},
 	}
 
-	_, err = s.ReopenIssue(ctx, target.ID, "needed more work", "alice")
-	if err != nil {
-		t.Fatal(err)
-	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := testutil.Context(t)
+			repo := testutil.TempRepo(t)
+			s := testutil.InitStore(t, repo)
 
-	_, err = s.CloseIssue(ctx, target.ID, "initial fix landed", "alice")
-	if err != nil {
-		t.Fatal(err)
-	}
+			target, err := s.CreateIssue(ctx, store.CreateIssueInput{
+				Title:       "target",
+				Description: "body",
+				Type:        issues.TypeTask,
+				Priority:    "medium",
+			}, "alice")
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	_, err = s.ReopenIssue(ctx, target.ID, " ", "alice")
-	if err != nil {
-		t.Fatal(err)
-	}
+			for _, step := range tc.transitions {
+				switch step.kind {
+				case "close":
+					_, err = s.CloseIssue(ctx, target.ID, step.reason, "alice")
+				case "reopen":
+					_, err = s.ReopenIssue(ctx, target.ID, step.reason, "alice")
+				default:
+					t.Fatalf("unknown transition kind %q", step.kind)
+				}
 
-	_, err = s.CloseIssue(ctx, target.ID, "verified and done", "alice")
-	if err != nil {
-		t.Fatal(err)
-	}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 
-	view, err := s.IssueDetailView(ctx, target.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+			view, err := s.IssueDetailView(ctx, target.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	if view.LatestCloseReason != "verified and done" {
-		t.Fatalf("unexpected latest close reason: %q", view.LatestCloseReason)
-	}
+			if view.LatestCloseReason != tc.wantClose {
+				t.Fatalf("unexpected latest close reason: got %q want %q", view.LatestCloseReason, tc.wantClose)
+			}
 
-	if view.LatestReopenReason != "needed more work" {
-		t.Fatalf("unexpected latest reopen reason: %q", view.LatestReopenReason)
+			if view.LatestReopenReason != tc.wantReopen {
+				t.Fatalf("unexpected latest reopen reason: got %q want %q", view.LatestReopenReason, tc.wantReopen)
+			}
+		})
 	}
 }
 

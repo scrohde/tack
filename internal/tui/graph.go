@@ -112,117 +112,6 @@ func (m *model) renderGraphViewport(width, height int, viewport *graphViewport, 
 	return strings.Join(append([]string{status}, visible...), "\n")
 }
 
-func renderFocusedGraph(view issues.FocusedGraphView) string {
-	selected, ok := view.NodeSummaries[view.SelectedID]
-	if !ok {
-		return "Focused graph unavailable for the selected issue."
-	}
-
-	parent, hasParent := view.NodeSummaries[view.ParentID]
-	blockers := summariesFromIDs(view.BlockedByIDs, view.NodeSummaries)
-	blocked := summariesFromIDs(view.BlocksIDs, view.NodeSummaries)
-	children := summariesFromIDs(view.ChildIDs, view.NodeSummaries)
-
-	selectedBox := newGraphBox(selected)
-	parentBox := newOptionalGraphBox(parent, hasParent)
-	leftBoxes := newGraphBoxes(blockers)
-	rightBoxes := newGraphBoxes(blocked)
-	childBoxes := newGraphBoxes(children)
-
-	leftWidth := maxBoxWidth(leftBoxes)
-	rightWidth := maxBoxWidth(rightBoxes)
-
-	centerWidth := selectedBox.width
-	if hasParent {
-		centerWidth = maxInt(centerWidth, parentBox.width)
-	}
-
-	if len(childBoxes) > 0 {
-		centerWidth = maxInt(centerWidth, maxBoxWidth(childBoxes))
-	}
-
-	const (
-		laneGap     = 8
-		stackGap    = 2
-		verticalGap = 4
-	)
-
-	leftX := 0
-	centerX := leftWidth + laneGap
-	rightX := centerX + centerWidth + laneGap
-
-	parentY := 2
-	selectedY := parentY + optionalBoxHeight(hasParent, parentBox.height) + verticalGap
-	childY := selectedY + selectedBox.height + verticalGap
-
-	leftStartY := selectedY
-	if len(leftBoxes) > 0 {
-		leftStartY = selectedY + (selectedBox.height-stackHeight(leftBoxes, stackGap))/2
-	}
-
-	rightStartY := selectedY
-	if len(rightBoxes) > 0 {
-		rightStartY = selectedY + (selectedBox.height-stackHeight(rightBoxes, stackGap))/2
-	}
-
-	childStartY := childY
-	totalHeight := maxInt(selectedY+selectedBox.height, childStartY+stackHeight(childBoxes, stackGap))
-	totalHeight = maxInt(totalHeight, leftStartY+stackHeight(leftBoxes, stackGap))
-	totalHeight = maxInt(totalHeight, rightStartY+stackHeight(rightBoxes, stackGap))
-	totalHeight += 2
-
-	totalWidth := maxInt(centerX+centerWidth, rightX+rightWidth)
-	totalWidth = maxInt(totalWidth, len([]rune("Legend: ─▶ blocks  ┄▶ parent/child")))
-	totalWidth += 2
-
-	canvas := newGraphCanvas(totalWidth, totalHeight)
-	canvas.write(0, 0, "Legend: ─▶ blocks  ┄▶ parent/child")
-	canvas.write(leftX, maxInt(1, leftStartY-2), "Blocked By")
-	canvas.write(centerX, 1, "Parent")
-	canvas.write(centerX, maxInt(1, selectedY-2), "Selected")
-	canvas.write(rightX, maxInt(1, rightStartY-2), "Blocks")
-	canvas.write(centerX, maxInt(selectedY+selectedBox.height+1, childStartY-2), "Children")
-
-	selectedRect := canvas.drawBox(centerX+(centerWidth-selectedBox.width)/2, selectedY, selectedBox)
-
-	var parentRect graphRect
-	if hasParent {
-		parentRect = canvas.drawBox(centerX+(centerWidth-parentBox.width)/2, parentY, parentBox)
-		drawVerticalConnector(canvas, parentRect.bottomCenterX(), parentRect.y+parentRect.height, selectedRect.topCenterX(), selectedRect.y-1, treeStroke, '▼')
-	} else {
-		canvas.write(centerX, parentY+1, "(none)")
-	}
-
-	for i, box := range leftBoxes {
-		rect := canvas.drawBox(leftX+(leftWidth-box.width)/2, leftStartY+i*(box.height+stackGap), box)
-		drawOrthogonalConnector(canvas, rect.x+rect.width, rect.midY(), selectedRect.x-1, selectedRect.midY(), blockStroke, '▶')
-	}
-
-	if len(leftBoxes) == 0 {
-		canvas.write(leftX, leftStartY+1, "(none)")
-	}
-
-	for i, box := range rightBoxes {
-		rect := canvas.drawBox(rightX+(rightWidth-box.width)/2, rightStartY+i*(box.height+stackGap), box)
-		drawOrthogonalConnector(canvas, selectedRect.x+selectedRect.width, selectedRect.midY(), rect.x-1, rect.midY(), blockStroke, '▶')
-	}
-
-	if len(rightBoxes) == 0 {
-		canvas.write(rightX, rightStartY+1, "(none)")
-	}
-
-	for i, box := range childBoxes {
-		rect := canvas.drawBox(centerX+(centerWidth-box.width)/2, childStartY+i*(box.height+stackGap), box)
-		drawVerticalConnector(canvas, selectedRect.bottomCenterX(), selectedRect.y+selectedRect.height, rect.topCenterX(), rect.y-1, treeStroke, '▼')
-	}
-
-	if len(childBoxes) == 0 {
-		canvas.write(centerX, childStartY+1, "(none)")
-	}
-
-	return canvas.render()
-}
-
 func renderProjectGraph(view issues.ProjectGraphView, centerID string) string {
 	if len(view.Issues) == 0 {
 		return "No project graph data."
@@ -521,23 +410,6 @@ type graphBox struct {
 	height int
 }
 
-func newGraphBoxes(summaries []issues.IssueSummary) []graphBox {
-	boxes := make([]graphBox, 0, len(summaries))
-	for _, summary := range summaries {
-		boxes = append(boxes, newGraphBox(summary))
-	}
-
-	return boxes
-}
-
-func newOptionalGraphBox(summary issues.IssueSummary, ok bool) graphBox {
-	if !ok {
-		return graphBox{}
-	}
-
-	return newGraphBox(summary)
-}
-
 func newGraphBox(summary issues.IssueSummary) graphBox {
 	title := trimRunes(summary.Title, 22)
 	meta := fmt.Sprintf("[%s] %s", summary.Status, summary.Type)
@@ -568,54 +440,6 @@ func newGraphBox(summary issues.IssueSummary) graphBox {
 		width:  len([]rune(lines[0])),
 		height: len(lines),
 	}
-}
-
-func summariesFromIDs(ids []string, summaries map[string]issues.IssueSummary) []issues.IssueSummary {
-	out := make([]issues.IssueSummary, 0, len(ids))
-	for _, id := range ids {
-		summary, ok := summaries[id]
-		if !ok {
-			out = append(out, issues.IssueSummary{ID: id, Title: id, Status: "unknown", Type: "task"})
-			continue
-		}
-
-		out = append(out, summary)
-	}
-
-	return out
-}
-
-func maxBoxWidth(boxes []graphBox) int {
-	width := 0
-	for _, box := range boxes {
-		width = maxInt(width, box.width)
-	}
-
-	return width
-}
-
-func stackHeight(boxes []graphBox, gap int) int {
-	if len(boxes) == 0 {
-		return 0
-	}
-
-	height := 0
-	for i, box := range boxes {
-		height += box.height
-		if i < len(boxes)-1 {
-			height += gap
-		}
-	}
-
-	return height
-}
-
-func optionalBoxHeight(ok bool, height int) int {
-	if !ok {
-		return 0
-	}
-
-	return height
 }
 
 type graphCanvas struct {

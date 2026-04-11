@@ -2142,8 +2142,10 @@ func relatedIssueIDs(issue issues.Issue, deps issues.DependencyList) []string {
 }
 
 func latestTransitionReasons(events []issues.Event) (string, string) {
-	var closeReason string
-	var reopenReason string
+	var (
+		closeReason  string
+		reopenReason string
+	)
 
 	for i := len(events) - 1; i >= 0 && (closeReason == "" || reopenReason == ""); i-- {
 		event := events[i]
@@ -2172,7 +2174,8 @@ func transitionReason(payload string) string {
 		Reason string `json:"reason"`
 	}
 
-	if err := json.Unmarshal([]byte(payload), &data); err != nil {
+	err := json.Unmarshal([]byte(payload), &data)
+	if err != nil {
 		return ""
 	}
 
