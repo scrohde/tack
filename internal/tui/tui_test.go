@@ -745,6 +745,51 @@ func TestBrowserPaneScrollsLongIssueLists(t *testing.T) {
 	}
 }
 
+func TestBrowserPaneOmitsTitleColumnAndTitleText(t *testing.T) {
+	t.Parallel()
+
+	summary := issues.IssueSummary{
+		ID:     "tk-1",
+		Title:  "this is a very long issue title that should never appear in the browser pane",
+		Status: issues.StatusOpen,
+		Type:   issues.TypeTask,
+	}
+
+	reader := &fakeReader{
+		allSummaries: []issues.IssueSummary{summary},
+		details: map[string]issues.IssueDetailView{
+			"tk-1": {Issue: issues.Issue{ID: "tk-1", Title: summary.Title, Status: issues.StatusOpen}},
+		},
+		focused: map[string]issues.FocusedGraphView{
+			"tk-1": {SelectedID: "tk-1", NodeSummaries: map[string]issues.IssueSummary{"tk-1": summary}},
+		},
+		project: issues.ProjectGraphView{Issues: []issues.IssueSummary{summary}},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rendered := ansiPattern.ReplaceAllString(m.renderBrowserBody(80, 4), "")
+
+	if strings.Contains(rendered, "TITLE") {
+		t.Fatalf("expected browser header to omit the title column, got:\n%s", rendered)
+	}
+
+	if strings.Contains(rendered, summary.Title) {
+		t.Fatalf("expected browser rows to omit issue titles, got:\n%s", rendered)
+	}
+
+	if !strings.Contains(rendered, "ID") || !strings.Contains(rendered, "STATUS") || !strings.Contains(rendered, "TYPE") {
+		t.Fatalf("expected browser header to keep id/status/type columns, got:\n%s", rendered)
+	}
+
+	if !strings.Contains(rendered, "tk-1") || !strings.Contains(rendered, "open") || !strings.Contains(rendered, "task") {
+		t.Fatalf("expected browser row to keep issue metadata, got:\n%s", rendered)
+	}
+}
+
 func TestEmptyAndCompactStatesRenderIntentionally(t *testing.T) {
 	t.Parallel()
 

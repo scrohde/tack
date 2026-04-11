@@ -795,9 +795,8 @@ func (m *model) renderBrowserBody(width, height int) string {
 	idWidth := 6
 	statusWidth := 11
 	typeWidth := 8
-	titleWidth := maxInt(12, width-(indicatorWidth+idWidth+statusWidth+typeWidth+4))
 
-	header := tableHeaderStyle.Render(fmt.Sprintf("%-*s %-*s %-*s %-*s %s", indicatorWidth, "", idWidth, "ID", statusWidth, "STATUS", typeWidth, "TYPE", "TITLE"))
+	header := tableHeaderStyle.Render(fmt.Sprintf("%-*s %-*s %-*s %-*s", indicatorWidth, "", idWidth, "ID", statusWidth, "STATUS", typeWidth, "TYPE"))
 	if height == 1 {
 		return header
 	}
@@ -830,7 +829,7 @@ func (m *model) renderBrowserBody(width, height int) string {
 			marker = "* "
 		}
 
-		line := fmt.Sprintf("%-*s %-*s %-*s %-*s %s", indicatorWidth, marker, idWidth, summary.ID, statusWidth, summary.Status, typeWidth, summary.Type, truncateText(summary.Title, titleWidth))
+		line := fmt.Sprintf("%-*s %-*s %-*s %-*s", indicatorWidth, marker, idWidth, summary.ID, statusWidth, summary.Status, typeWidth, summary.Type)
 		rows = append(rows, styleIssueLine(summary, i == m.selected, summary.ID == m.currentDetailID()).Render(line))
 	}
 
@@ -1274,20 +1273,3 @@ var (
 	sectionTitleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 	mutedTextStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 )
-
-func truncateText(text string, width int) string {
-	if width <= 0 {
-		return ""
-	}
-
-	runes := []rune(text)
-	if len(runes) <= width {
-		return text
-	}
-
-	if width == 1 {
-		return "…"
-	}
-
-	return string(runes[:width-1]) + "…"
-}
