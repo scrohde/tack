@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -1039,21 +1040,23 @@ func parseFilterInput(current store.ListFilter, input string) (store.ListFilter,
 
 		switch key {
 		case "status":
-			if value != "" && !issues.IsValidStatus(value) {
-				return store.ListFilter{}, fmt.Errorf("invalid status %q", value)
+			statuses, err := parseFilterValues(value, issues.IsValidStatus)
+			if err != nil {
+				return store.ListFilter{}, fmt.Errorf("invalid status %q", err.Error())
 			}
 
-			next.Status = value
+			next.Statuses = statuses
 		case "type":
-			if value != "" && !issues.IsValidType(value) {
-				return store.ListFilter{}, fmt.Errorf("invalid type %q", value)
+			types, err := parseFilterValues(value, issues.IsValidType)
+			if err != nil {
+				return store.ListFilter{}, fmt.Errorf("invalid type %q", err.Error())
 			}
 
-			next.Type = value
+			next.Types = types
 		case "label":
-			next.Label = value
+			next.Labels = splitFilterValues(value)
 		case "assignee":
-			next.Assignee = value
+			next.Assignees = splitFilterValues(value)
 		case "limit":
 			if value == "" {
 				next.Limit = 0
@@ -1074,23 +1077,58 @@ func parseFilterInput(current store.ListFilter, input string) (store.ListFilter,
 	return next, nil
 }
 
+func parseFilterValues(value string, valid func(string) bool) ([]string, error) {
+	values := splitFilterValues(value)
+	for _, entry := range values {
+		if !valid(entry) {
+			return nil, errors.New(entry)
+		}
+	}
+
+	return values, nil
+}
+
+func splitFilterValues(value string) []string {
+	if value == "" {
+		return nil
+	}
+
+	parts := strings.Split(value, ",")
+	values := make([]string, 0, len(parts))
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		values = append(values, part)
+	}
+
+	if len(values) == 0 {
+		return nil
+	}
+
+	return values
+}
+
 func formatFilter(filter store.ListFilter) string {
 	parts := []string{}
 
-	if filter.Status != "" {
-		parts = append(parts, "status="+filter.Status)
+	if len(filter.Statuses) > 0 {
+		parts = append(parts, "status="+strings.Join(filter.Statuses, ","))
 	}
 
-	if filter.Type != "" {
-		parts = append(parts, "type="+filter.Type)
+	if len(filter.Types) > 0 {
+		parts = append(parts, "type="+strings.Join(filter.Types, ","))
 	}
 
-	if filter.Label != "" {
-		parts = append(parts, "label="+filter.Label)
+	if len(filter.Labels) > 0 {
+		parts = append(parts, "label="+strings.Join(filter.Labels, ","))
 	}
 
-	if filter.Assignee != "" {
-		parts = append(parts, "assignee="+filter.Assignee)
+	if len(filter.Assignees) > 0 {
+		parts = append(parts, "assignee="+strings.Join(filter.Assignees, ","))
 	}
 
 	if filter.Limit > 0 {

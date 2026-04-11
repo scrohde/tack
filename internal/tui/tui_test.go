@@ -417,16 +417,15 @@ func TestFilterEditorUpdatesFilterAndSummaries(t *testing.T) {
 
 	reader := &fakeReader{
 		listByFilter: func(filter store.ListFilter) []issues.IssueSummary {
-			switch filter.Status {
-			case "blocked":
+			if len(filter.Statuses) == 1 && filter.Statuses[0] == "blocked" {
 				return []issues.IssueSummary{
 					{ID: "tk-2", Title: "blocked issue", Status: issues.StatusBlocked, Type: issues.TypeBug},
 				}
-			default:
-				return []issues.IssueSummary{
-					{ID: "tk-1", Title: "open issue", Status: issues.StatusOpen, Type: issues.TypeTask},
-					{ID: "tk-2", Title: "blocked issue", Status: issues.StatusBlocked, Type: issues.TypeBug},
-				}
+			}
+
+			return []issues.IssueSummary{
+				{ID: "tk-1", Title: "open issue", Status: issues.StatusOpen, Type: issues.TypeTask},
+				{ID: "tk-2", Title: "blocked issue", Status: issues.StatusBlocked, Type: issues.TypeBug},
 			}
 		},
 		details: map[string]issues.IssueDetailView{
@@ -458,11 +457,11 @@ func TestFilterEditorUpdatesFilterAndSummaries(t *testing.T) {
 
 	m.handleKey("enter")
 
-	if got := m.filter.Status; got != "blocked" {
-		t.Fatalf("unexpected filter status: %q", got)
+	if len(m.filter.Statuses) != 1 || m.filter.Statuses[0] != "blocked" {
+		t.Fatalf("unexpected filter status: %#v", m.filter.Statuses)
 	}
 
-	if len(reader.listFilters) != 2 || reader.listFilters[1].Status != "blocked" {
+	if len(reader.listFilters) != 2 || len(reader.listFilters[1].Statuses) != 1 || reader.listFilters[1].Statuses[0] != "blocked" {
 		t.Fatalf("unexpected list filters: %#v", reader.listFilters)
 	}
 
@@ -723,7 +722,7 @@ func TestEmptyAndCompactStatesRenderIntentionally(t *testing.T) {
 	}
 
 	filteredModel, err := newModel(context.Background(), "/repo", filteredReader, StartupOptions{
-		Filter: store.ListFilter{Status: issues.StatusBlocked},
+		Filter: store.ListFilter{Statuses: []string{issues.StatusBlocked}},
 	})
 	if err != nil {
 		t.Fatal(err)

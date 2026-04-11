@@ -423,11 +423,11 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 	options := tui.StartupOptions{
 		Source: tui.DataSourceAll,
 		Filter: store.ListFilter{
-			Status:   strings.TrimSpace(*status),
-			Assignee: strings.TrimSpace(*assignee),
-			Label:    strings.TrimSpace(*label),
-			Type:     strings.TrimSpace(*kind),
-			Limit:    *limit,
+			Statuses:  singleValueFilter(strings.TrimSpace(*status)),
+			Assignees: singleValueFilter(strings.TrimSpace(*assignee)),
+			Labels:    singleValueFilter(strings.TrimSpace(*label)),
+			Types:     singleValueFilter(strings.TrimSpace(*kind)),
+			Limit:     *limit,
 		},
 	}
 
@@ -1221,12 +1221,20 @@ func parseListFilter(name string, helpOutput io.Writer, args []string, allowAssi
 	}
 
 	return store.ListFilter{
-		Status:   strings.TrimSpace(*status),
-		Assignee: assigneeValue,
-		Label:    strings.TrimSpace(*label),
-		Type:     strings.TrimSpace(*kind),
-		Limit:    *limit,
+		Statuses:  singleValueFilter(strings.TrimSpace(*status)),
+		Assignees: singleValueFilter(assigneeValue),
+		Labels:    singleValueFilter(strings.TrimSpace(*label)),
+		Types:     singleValueFilter(strings.TrimSpace(*kind)),
+		Limit:     *limit,
 	}, *jsonOut, *summaryOut, nil
+}
+
+func singleValueFilter(value string) []string {
+	if value == "" {
+		return nil
+	}
+
+	return []string{value}
 }
 
 func openRepoStore() (string, *store.Store, error) {

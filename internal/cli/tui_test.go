@@ -48,7 +48,11 @@ func TestTUIStartupFlagsSeedOptions(t *testing.T) {
 		t.Fatalf("unexpected data source: %#v", gotOptions)
 	}
 
-	if gotOptions.Filter.Status != "blocked" || gotOptions.Filter.Type != "bug" || gotOptions.Filter.Label != "api" || gotOptions.Filter.Assignee != "alice" || gotOptions.Filter.Limit != 7 {
+	if len(gotOptions.Filter.Statuses) != 1 || gotOptions.Filter.Statuses[0] != "blocked" ||
+		len(gotOptions.Filter.Types) != 1 || gotOptions.Filter.Types[0] != "bug" ||
+		len(gotOptions.Filter.Labels) != 1 || gotOptions.Filter.Labels[0] != "api" ||
+		len(gotOptions.Filter.Assignees) != 1 || gotOptions.Filter.Assignees[0] != "alice" ||
+		gotOptions.Filter.Limit != 7 {
 		t.Fatalf("unexpected filters: %#v", gotOptions.Filter)
 	}
 }

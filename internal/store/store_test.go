@@ -266,6 +266,190 @@ func TestReadySummariesExcludeParentsWithOpenChildren(t *testing.T) {
 	}
 }
 
+func TestListFiltersSupportMultipleValues(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	issueOne, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "open task",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+		Labels:      []string{"api"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	issueTwo, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "blocked bug",
+		Description: "body",
+		Type:        issues.TypeBug,
+		Priority:    "medium",
+		Labels:      []string{"api"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	issueThree, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "open ops bug",
+		Description: "body",
+		Type:        issues.TypeBug,
+		Priority:    "medium",
+		Labels:      []string{"ops"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	issueFour, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "open docs bug",
+		Description: "body",
+		Type:        issues.TypeBug,
+		Priority:    "medium",
+		Labels:      []string{"docs"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	aliceAssignee := "alice"
+	bobAssignee := "bob"
+	blockedStatus := issues.StatusBlocked
+
+	for _, update := range []struct {
+		id       string
+		assignee *string
+		status   *string
+	}{
+		{id: issueOne.ID, assignee: &aliceAssignee},
+		{id: issueTwo.ID, assignee: &bobAssignee, status: &blockedStatus},
+		{id: issueThree.ID, assignee: &aliceAssignee},
+		{id: issueFour.ID, assignee: &aliceAssignee},
+	} {
+		_, err = s.UpdateIssue(ctx, update.id, store.UpdateIssueInput{
+			Assignee: update.assignee,
+			Status:   update.status,
+		}, "alice")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	filter := store.ListFilter{
+		Statuses:  []string{issues.StatusOpen, issues.StatusBlocked},
+		Types:     []string{issues.TypeBug},
+		Labels:    []string{"api", "ops"},
+		Assignees: []string{"alice", "bob"},
+	}
+
+	listed, err := s.ListIssues(ctx, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(listed) != 2 || listed[0].ID != issueTwo.ID || listed[1].ID != issueThree.ID {
+		t.Fatalf("unexpected multi-value list results: %#v", listed)
+	}
+
+	summaries, err := s.ListIssueSummaries(ctx, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(summaries) != 2 || summaries[0].ID != issueTwo.ID || summaries[1].ID != issueThree.ID {
+		t.Fatalf("unexpected multi-value summary results: %#v", summaries)
+	}
+}
+
+func TestReadyFiltersSupportMultipleValues(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	readyTask, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "ready task",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+		Labels:      []string{"backend"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	readyBug, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "ready bug",
+		Description: "body",
+		Type:        issues.TypeBug,
+		Priority:    "medium",
+		Labels:      []string{"ui"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blockedBug, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "blocked bug",
+		Description: "body",
+		Type:        issues.TypeBug,
+		Priority:    "medium",
+		Labels:      []string{"ui"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	claimedBug, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "claimed bug",
+		Description: "body",
+		Type:        issues.TypeBug,
+		Priority:    "medium",
+		Labels:      []string{"ui"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blockedStatus := issues.StatusBlocked
+
+	_, err = s.UpdateIssue(ctx, blockedBug.ID, store.UpdateIssueInput{Status: &blockedStatus}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.UpdateIssue(ctx, claimedBug.ID, store.UpdateIssueInput{Claim: true}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	filter := store.ListFilter{
+		Statuses: []string{issues.StatusOpen, issues.StatusBlocked},
+		Types:    []string{issues.TypeTask, issues.TypeBug},
+		Labels:   []string{"backend", "ui"},
+	}
+
+	ready, err := s.ReadyIssues(ctx, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(ready) != 2 || ready[0].ID != readyTask.ID || ready[1].ID != readyBug.ID {
+		t.Fatalf("unexpected multi-value ready results: %#v", ready)
+	}
+
+	summaries, err := s.ReadyIssueSummaries(ctx, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(summaries) != 2 || summaries[0].ID != readyTask.ID || summaries[1].ID != readyBug.ID {
+		t.Fatalf("unexpected multi-value ready summaries: %#v", summaries)
+	}
+}
+
 func TestIssueDetailViewIncludesCommentsDependenciesAndRelatedSummaries(t *testing.T) {
 	ctx := testutil.Context(t)
 	repo := testutil.TempRepo(t)
@@ -788,12 +972,12 @@ func TestReadyRejectsAssigneeFilters(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = s.ReadyIssues(ctx, store.ListFilter{Assignee: "alice"})
+	_, err = s.ReadyIssues(ctx, store.ListFilter{Assignees: []string{"alice"}})
 	if err == nil || !strings.Contains(err.Error(), "do not support assignee filters") {
 		t.Fatalf("expected ready issue assignee filter rejection, got %v", err)
 	}
 
-	_, err = s.ReadyIssueSummaries(ctx, store.ListFilter{Assignee: "alice"})
+	_, err = s.ReadyIssueSummaries(ctx, store.ListFilter{Assignees: []string{"alice"}})
 	if err == nil || !strings.Contains(err.Error(), "do not support assignee filters") {
 		t.Fatalf("expected ready summary assignee filter rejection, got %v", err)
 	}

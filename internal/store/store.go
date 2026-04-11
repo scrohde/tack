@@ -69,19 +69,116 @@ type UpdateIssueInput struct {
 }
 
 type ListFilter struct {
-	Status   string
-	Assignee string
-	Label    string
-	Type     string
-	Limit    int
+	Statuses  []string
+	Assignees []string
+	Labels    []string
+	Types     []string
+	Limit     int
 }
 
 func validateReadyFilter(filter ListFilter) error {
-	if filter.Assignee != "" {
+	if len(filterAssignees(filter)) > 0 {
 		return errors.New("ready queries do not support assignee filters")
 	}
 
 	return nil
+}
+
+func filterStatuses(filter ListFilter) []string {
+	return normalizedFilterValues(filter.Statuses, nil)
+}
+
+func filterAssignees(filter ListFilter) []string {
+	return normalizedFilterValues(filter.Assignees, nil)
+}
+
+func filterLabels(filter ListFilter) []string {
+	return normalizedFilterValues(filter.Labels, strings.ToLower)
+}
+
+func filterTypes(filter ListFilter) []string {
+	return normalizedFilterValues(filter.Types, nil)
+}
+
+func normalizedFilterValues(values []string, transform func(string) string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if transform != nil {
+			value = transform(value)
+		}
+
+		if value == "" {
+			continue
+		}
+
+		if _, ok := seen[value]; ok {
+			continue
+		}
+
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+
+	if len(out) == 0 {
+		return nil
+	}
+
+	return out
+}
+
+func listFilterClauses(filter ListFilter, includeAssignee bool) ([]string, []any) {
+	var (
+		clauses []string
+		args    []any
+	)
+
+	clauses, args = appendAnyMatchClause(clauses, args, "i.status", filterStatuses(filter))
+	if includeAssignee {
+		clauses, args = appendAnyMatchClause(clauses, args, "COALESCE(i.assignee, '')", filterAssignees(filter))
+	}
+
+	clauses, args = appendAnyMatchClause(clauses, args, "i.type", filterTypes(filter))
+
+	labels := filterLabels(filter)
+	if len(labels) > 0 {
+		clauses = append(clauses, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM issue_labels l WHERE l.issue_id = i.id AND l.label IN (%s))",
+			sqlPlaceholders(len(labels)),
+		))
+		for _, label := range labels {
+			args = append(args, label)
+		}
+	}
+
+	return clauses, args
+}
+
+func appendAnyMatchClause(clauses []string, args []any, column string, values []string) ([]string, []any) {
+	if len(values) == 0 {
+		return clauses, args
+	}
+
+	clauses = append(clauses, fmt.Sprintf("%s IN (%s)", column, sqlPlaceholders(len(values))))
+	for _, value := range values {
+		args = append(args, value)
+	}
+
+	return clauses, args
+}
+
+func sqlPlaceholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+
+	return strings.TrimSuffix(strings.Repeat("?, ", n), ", ")
 }
 
 func Open(path string) (*Store, error) {
@@ -521,25 +618,7 @@ func (s *Store) ListIssues(ctx context.Context, filter ListFilter) ([]issues.Iss
 		args  []any
 	)
 
-	if filter.Status != "" {
-		where = append(where, "i.status = ?")
-		args = append(args, filter.Status)
-	}
-
-	if filter.Assignee != "" {
-		where = append(where, "COALESCE(i.assignee, '') = ?")
-		args = append(args, filter.Assignee)
-	}
-
-	if filter.Type != "" {
-		where = append(where, "i.type = ?")
-		args = append(args, filter.Type)
-	}
-
-	if filter.Label != "" {
-		where = append(where, "EXISTS (SELECT 1 FROM issue_labels l WHERE l.issue_id = i.id AND l.label = ?)")
-		args = append(args, strings.ToLower(filter.Label))
-	}
+	where, args = listFilterClauses(filter, true)
 
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -572,25 +651,7 @@ func (s *Store) ListIssueSummaries(ctx context.Context, filter ListFilter) ([]is
 		args  []any
 	)
 
-	if filter.Status != "" {
-		where = append(where, "i.status = ?")
-		args = append(args, filter.Status)
-	}
-
-	if filter.Assignee != "" {
-		where = append(where, "COALESCE(i.assignee, '') = ?")
-		args = append(args, filter.Assignee)
-	}
-
-	if filter.Type != "" {
-		where = append(where, "i.type = ?")
-		args = append(args, filter.Type)
-	}
-
-	if filter.Label != "" {
-		where = append(where, "EXISTS (SELECT 1 FROM issue_labels l WHERE l.issue_id = i.id AND l.label = ?)")
-		args = append(args, strings.ToLower(filter.Label))
-	}
+	where, args = listFilterClauses(filter, true)
 
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -645,16 +706,11 @@ func (s *Store) ReadyIssues(ctx context.Context, filter ListFilter) ([]issues.Is
 		issues.StatusClosed,
 	}
 
-	if filter.Type != "" {
-		query += " AND i.type = ?"
+	filterWhere, filterArgs := listFilterClauses(filter, false)
+	if len(filterWhere) > 0 {
+		query += " AND " + strings.Join(filterWhere, " AND ")
 
-		args = append(args, filter.Type)
-	}
-
-	if filter.Label != "" {
-		query += " AND EXISTS (SELECT 1 FROM issue_labels l WHERE l.issue_id = i.id AND l.label = ?)"
-
-		args = append(args, strings.ToLower(filter.Label))
+		args = append(args, filterArgs...)
 	}
 
 	query += " ORDER BY i.sequence ASC"
@@ -705,16 +761,11 @@ func (s *Store) ReadyIssueSummaries(ctx context.Context, filter ListFilter) ([]i
 		issues.StatusClosed,
 	}
 
-	if filter.Type != "" {
-		query += " AND i.type = ?"
+	filterWhere, filterArgs := listFilterClauses(filter, false)
+	if len(filterWhere) > 0 {
+		query += " AND " + strings.Join(filterWhere, " AND ")
 
-		args = append(args, filter.Type)
-	}
-
-	if filter.Label != "" {
-		query += " AND EXISTS (SELECT 1 FROM issue_labels l WHERE l.issue_id = i.id AND l.label = ?)"
-
-		args = append(args, strings.ToLower(filter.Label))
+		args = append(args, filterArgs...)
 	}
 
 	query += " ORDER BY i.sequence ASC"
