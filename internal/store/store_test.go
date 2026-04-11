@@ -359,6 +359,64 @@ func TestIssueDetailViewIncludesCommentsDependenciesAndRelatedSummaries(t *testi
 	if view.RelatedSummaries[downstream.ID].Title != downstream.Title {
 		t.Fatalf("missing downstream summary: %#v", view.RelatedSummaries)
 	}
+
+	if view.LatestCloseReason != "" || view.LatestReopenReason != "" {
+		t.Fatalf("expected empty transition reasons for untouched issue, got close=%q reopen=%q", view.LatestCloseReason, view.LatestReopenReason)
+	}
+}
+
+func TestIssueDetailViewDerivesLatestTransitionReasons(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	target, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "target",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.CloseIssue(ctx, target.ID, "", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.ReopenIssue(ctx, target.ID, "needed more work", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.CloseIssue(ctx, target.ID, "initial fix landed", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.ReopenIssue(ctx, target.ID, " ", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.CloseIssue(ctx, target.ID, "verified and done", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := s.IssueDetailView(ctx, target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if view.LatestCloseReason != "verified and done" {
+		t.Fatalf("unexpected latest close reason: %q", view.LatestCloseReason)
+	}
+
+	if view.LatestReopenReason != "needed more work" {
+		t.Fatalf("unexpected latest reopen reason: %q", view.LatestReopenReason)
+	}
 }
 
 func TestFocusedGraphViewIncludesDirectNeighborhoodOnly(t *testing.T) {

@@ -381,6 +381,11 @@ func (s *Store) IssueDetailView(ctx context.Context, id string) (issues.IssueDet
 		return issues.IssueDetailView{}, err
 	}
 
+	events, err := s.listEventsByIssueID(ctx, issue.ID)
+	if err != nil {
+		return issues.IssueDetailView{}, err
+	}
+
 	if comments != nil {
 		view.Comments = comments
 	}
@@ -394,6 +399,7 @@ func (s *Store) IssueDetailView(ctx context.Context, id string) (issues.IssueDet
 	}
 
 	view.Dependencies = deps
+	view.LatestCloseReason, view.LatestReopenReason = latestTransitionReasons(events)
 
 	related, err := s.listIssueSummariesByID(ctx, relatedIssueIDs(issue, deps))
 	if err != nil {
@@ -2133,6 +2139,44 @@ func relatedIssueIDs(issue issues.Issue, deps issues.DependencyList) []string {
 	}
 
 	return ids
+}
+
+func latestTransitionReasons(events []issues.Event) (string, string) {
+	var closeReason string
+	var reopenReason string
+
+	for i := len(events) - 1; i >= 0 && (closeReason == "" || reopenReason == ""); i-- {
+		event := events[i]
+
+		switch event.EventType {
+		case "issue_closed":
+			if closeReason == "" {
+				closeReason = transitionReason(event.Payload)
+			}
+		case "issue_reopened":
+			if reopenReason == "" {
+				reopenReason = transitionReason(event.Payload)
+			}
+		}
+	}
+
+	return closeReason, reopenReason
+}
+
+func transitionReason(payload string) string {
+	if strings.TrimSpace(payload) == "" {
+		return ""
+	}
+
+	var data struct {
+		Reason string `json:"reason"`
+	}
+
+	if err := json.Unmarshal([]byte(payload), &data); err != nil {
+		return ""
+	}
+
+	return strings.TrimSpace(data.Reason)
 }
 
 func nullableString(v string) any {

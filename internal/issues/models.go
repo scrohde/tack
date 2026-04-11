@@ -106,10 +106,12 @@ type IssueDetail struct {
 }
 
 type IssueDetailView struct {
-	Issue            Issue                   `json:"issue"`
-	Comments         []Comment               `json:"comments"`
-	Dependencies     DependencyList          `json:"dependencies"`
-	RelatedSummaries map[string]IssueSummary `json:"related_summaries"`
+	Issue              Issue                   `json:"issue"`
+	Comments           []Comment               `json:"comments"`
+	Dependencies       DependencyList          `json:"dependencies"`
+	RelatedSummaries   map[string]IssueSummary `json:"related_summaries"`
+	LatestCloseReason  string                  `json:"latest_close_reason,omitempty"`
+	LatestReopenReason string                  `json:"latest_reopen_reason,omitempty"`
 }
 
 type FocusedGraphView struct {
