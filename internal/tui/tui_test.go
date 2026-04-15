@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -62,6 +63,48 @@ func TestNewModelLoadsSummariesFromStartupSource(t *testing.T) {
 
 	if cmd := m.Init(); cmd == nil {
 		t.Fatalf("expected Init to schedule auto-refresh")
+	}
+}
+
+func TestNewModelDefaultsAllModeToActiveStatuses(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		listByFilter: func(filter store.ListFilter) []issues.IssueSummary {
+			if !slices.Equal(filter.Statuses, defaultAllIssueStatuses) {
+				t.Fatalf("expected default active statuses, got %#v", filter.Statuses)
+			}
+
+			return []issues.IssueSummary{
+				{ID: "tk-1", Title: "active issue", Status: issues.StatusOpen, Type: issues.TypeTask},
+			}
+		},
+		details: map[string]issues.IssueDetailView{
+			"tk-1": {Issue: issues.Issue{ID: "tk-1", Title: "active issue", Status: issues.StatusOpen}},
+		},
+		focused: map[string]issues.FocusedGraphView{
+			"tk-1": {SelectedID: "tk-1", NodeSummaries: map[string]issues.IssueSummary{"tk-1": {ID: "tk-1", Title: "active issue", Status: issues.StatusOpen}}},
+		},
+		project: issues.ProjectGraphView{
+			Issues: []issues.IssueSummary{{ID: "tk-1", Title: "active issue", Status: issues.StatusOpen}},
+		},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(reader.listFilters) != 1 || !slices.Equal(reader.listFilters[0].Statuses, defaultAllIssueStatuses) {
+		t.Fatalf("expected startup load to use default statuses, got %#v", reader.listFilters)
+	}
+
+	if summary := formatFilter(m.effectiveFilter()); summary != "status=open,in_progress,blocked" {
+		t.Fatalf("expected default filter summary, got %q", summary)
+	}
+
+	if header := m.renderHeader(); !strings.Contains(header, "filter status=open,in_progress,blocked") {
+		t.Fatalf("expected header to describe default filter, got %q", header)
 	}
 }
 
@@ -665,13 +708,13 @@ func TestGuidedFilterPickerLimitAndReset(t *testing.T) {
 	m.handleKey("down")
 	m.handleKey("enter")
 
-	if got := formatFilter(m.filter); got != "(none)" {
-		t.Fatalf("expected reset to clear filters, got %s", got)
+	if !slices.Equal(m.effectiveFilter().Statuses, defaultAllIssueStatuses) || m.filter.Limit != 0 {
+		t.Fatalf("expected reset to restore default active statuses and clear extras, got %#v (effective %#v)", m.filter, m.effectiveFilter())
 	}
 
 	last := reader.listFilters[len(reader.listFilters)-1]
-	if len(last.Statuses) != 0 || last.Limit != 0 {
-		t.Fatalf("expected reset reload to clear filters, got %#v", last)
+	if !slices.Equal(last.Statuses, defaultAllIssueStatuses) || last.Limit != 0 || len(last.Labels) != 0 || len(last.Types) != 0 || len(last.Assignees) != 0 {
+		t.Fatalf("expected reset reload to restore default statuses and clear extras, got %#v", last)
 	}
 }
 

@@ -60,6 +60,12 @@ var detailTabNames = []string{"Details", "Activity", "Project Graph"}
 
 const autoRefreshInterval = 5 * time.Second
 
+var defaultAllIssueStatuses = []string{
+	issues.StatusOpen,
+	issues.StatusInProgress,
+	issues.StatusBlocked,
+}
+
 type autoRefreshMsg struct{}
 
 type filterPickerMode string
@@ -416,7 +422,7 @@ func (m *model) renderHeader() string {
 
 	parts := []string{fmt.Sprintf("repo %s", repoName), fmt.Sprintf("view %s", m.source)}
 
-	filterSummary := formatFilter(m.filter)
+	filterSummary := formatFilter(m.effectiveFilter())
 	if filterSummary == "(none)" {
 		parts = append(parts, "filters none")
 	} else {
@@ -1017,11 +1023,13 @@ func (m *model) reload() error {
 }
 
 func (m *model) loadSummaries() ([]issues.IssueSummary, error) {
+	filter := m.effectiveFilter()
+
 	switch m.source {
 	case DataSourceReady:
-		return m.reader.ReadyIssueSummaries(m.ctx, m.filter)
+		return m.reader.ReadyIssueSummaries(m.ctx, filter)
 	default:
-		return m.reader.ListIssueSummaries(m.ctx, m.filter)
+		return m.reader.ListIssueSummaries(m.ctx, filter)
 	}
 }
 
@@ -1031,7 +1039,7 @@ func (m *model) filterOptions(key store.FilterValueKey) ([]string, error) {
 		source = store.FilterValueSourceReady
 	}
 
-	return m.reader.ListFilterValues(m.ctx, source, key, m.filter)
+	return m.reader.ListFilterValues(m.ctx, source, key, m.effectiveFilter())
 }
 
 func (m *model) syncDetailViews() {
@@ -1289,7 +1297,7 @@ func (m *model) hasSummary(id string) bool {
 func (m *model) renderFilterPicker(maxHeight int) string {
 	lines := []string{
 		sectionTitleStyle.Render("Guided Filters"),
-		"Current: " + formatFilter(m.filter),
+		"Current: " + formatFilter(m.effectiveFilter()),
 	}
 	contentHeight := maxInt(1, maxHeight-filterStyle.GetVerticalFrameSize())
 
@@ -1364,7 +1372,7 @@ func (m *model) renderBrowserBody(width, height int) string {
 	if len(m.summaries) == 0 {
 		return m.renderTextViewport(&m.browserViewport, maxInt(1, height), strings.Join([]string{
 			"No matching issues.",
-			fmt.Sprintf("Current filters: %s", formatFilter(m.filter)),
+			fmt.Sprintf("Current filters: %s", formatFilter(m.effectiveFilter())),
 			"Press / to adjust filters or r to toggle ready/all.",
 		}, "\n"))
 	}
@@ -1623,6 +1631,19 @@ func sanitizeFilterForSource(source DataSource, filter store.ListFilter) store.L
 	return filter
 }
 
+func effectiveFilterForSource(source DataSource, filter store.ListFilter) store.ListFilter {
+	filter = sanitizeFilterForSource(source, filter)
+	if source == DataSourceAll && len(filter.Statuses) == 0 {
+		filter.Statuses = append([]string(nil), defaultAllIssueStatuses...)
+	}
+
+	return filter
+}
+
+func (m *model) effectiveFilter() store.ListFilter {
+	return effectiveFilterForSource(m.source, m.filter)
+}
+
 func (m *model) filterPickerOptions() []filterPickerOption {
 	options := []filterPickerOption{
 		{key: filterPickerKeyStatus, label: "status"},
@@ -1643,9 +1664,11 @@ func (m *model) filterPickerOptions() []filterPickerOption {
 }
 
 func (m *model) renderFilterPickerKeySummary(key filterPickerKey) string {
+	filter := m.effectiveFilter()
+
 	switch key {
 	case filterPickerKeyStatus:
-		return renderFilterValuesSummary(m.filter.Statuses)
+		return renderFilterValuesSummary(filter.Statuses)
 	case filterPickerKeyType:
 		return renderFilterValuesSummary(m.filter.Types)
 	case filterPickerKeyLabel:
@@ -1653,17 +1676,17 @@ func (m *model) renderFilterPickerKeySummary(key filterPickerKey) string {
 	case filterPickerKeyAssignee:
 		return renderFilterValuesSummary(m.filter.Assignees)
 	case filterPickerKeyLimit:
-		if m.filter.Limit <= 0 {
+		if filter.Limit <= 0 {
 			return "(none)"
 		}
 
-		return strconv.Itoa(m.filter.Limit)
+		return strconv.Itoa(filter.Limit)
 	case filterPickerKeyReset:
-		if formatFilter(m.filter) == "(none)" {
+		if formatFilter(filter) == "(none)" {
 			return "clear all filters"
 		}
 
-		return "clear " + formatFilter(m.filter)
+		return "clear " + formatFilter(filter)
 	default:
 		return "(none)"
 	}
