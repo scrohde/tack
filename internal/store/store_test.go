@@ -764,6 +764,106 @@ func TestIssueDetailViewIncludesCommentsDependenciesAndRelatedSummaries(t *testi
 	}
 }
 
+func TestIssueDetailViewIncludesRepresentativeEventHistory(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	blocker, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "blocker",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	target, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "target",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.AddLabels(ctx, target.ID, []string{"ui"}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status := issues.StatusInProgress
+	assignee := "alice"
+
+	_, err = s.UpdateIssue(ctx, target.ID, store.UpdateIssueInput{
+		Status:   &status,
+		Assignee: &assignee,
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.AddDependency(ctx, target.ID, blocker.ID, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.CloseIssue(ctx, target.ID, "done", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.ReopenIssue(ctx, target.ID, "follow-up requested", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.ReplaceLabels(ctx, target.ID, []string{"backend", "tui"}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.RemoveDependency(ctx, target.ID, blocker.ID, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := s.IssueDetailView(ctx, target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var gotTypes []string
+
+	for _, event := range view.Events {
+		if event.IssueID != target.ID {
+			t.Fatalf("expected detail-view event for %s, got %#v", target.ID, event)
+		}
+
+		gotTypes = append(gotTypes, event.EventType)
+	}
+
+	wantTypes := []string{
+		"issue_created",
+		"labels_added",
+		"issue_updated",
+		"dependency_added",
+		"issue_closed",
+		"issue_reopened",
+		"labels_replaced",
+		"dependency_removed",
+	}
+	if !slices.Equal(gotTypes, wantTypes) {
+		t.Fatalf("unexpected event history: %#v", gotTypes)
+	}
+
+	if view.LatestCloseReason != "done" || view.LatestReopenReason != "follow-up requested" {
+		t.Fatalf("unexpected transition reasons: close=%q reopen=%q", view.LatestCloseReason, view.LatestReopenReason)
+	}
+}
+
 func TestIssueDetailViewInitializesEmptyCollections(t *testing.T) {
 	ctx := testutil.Context(t)
 	repo := testutil.TempRepo(t)

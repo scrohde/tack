@@ -937,6 +937,119 @@ func TestActivityTabMergesCommentsAndEventsChronologically(t *testing.T) {
 	}
 }
 
+func TestActivityTabHumanizesRepresentativeEventsWithoutPayloadNoise(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		allSummaries: []issues.IssueSummary{
+			{ID: "tk-1", Title: "target", Status: issues.StatusOpen, Type: issues.TypeTask},
+		},
+		details: map[string]issues.IssueDetailView{
+			"tk-1": {
+				Issue: issues.Issue{ID: "tk-1", Title: "target", Status: issues.StatusOpen, Type: issues.TypeTask},
+				Events: []issues.Event{
+					{
+						ID:        10,
+						Actor:     "alice",
+						EventType: "issue_created",
+						CreatedAt: mustParseTime(t, "2026-04-14T10:00:00Z"),
+					},
+					{
+						ID:        11,
+						Actor:     "alice",
+						EventType: "issue_updated",
+						Payload:   `{"assignee":"bob","description":"new body"}`,
+						CreatedAt: mustParseTime(t, "2026-04-14T10:01:00Z"),
+					},
+					{
+						ID:        12,
+						Actor:     "alice",
+						EventType: "issue_closed",
+						Payload:   `{"reason":"done and verified"}`,
+						CreatedAt: mustParseTime(t, "2026-04-14T10:02:00Z"),
+					},
+					{
+						ID:        13,
+						Actor:     "alice",
+						EventType: "issue_reopened",
+						Payload:   `{"reason":"needed another pass"}`,
+						CreatedAt: mustParseTime(t, "2026-04-14T10:03:00Z"),
+					},
+					{
+						ID:        14,
+						Actor:     "alice",
+						EventType: "dependency_added",
+						Payload:   `{"blocker_id":"tk-9"}`,
+						CreatedAt: mustParseTime(t, "2026-04-14T10:04:00Z"),
+					},
+					{
+						ID:        15,
+						Actor:     "alice",
+						EventType: "dependency_removed",
+						Payload:   `{"blocker_id":"tk-9"}`,
+						CreatedAt: mustParseTime(t, "2026-04-14T10:05:00Z"),
+					},
+					{
+						ID:        16,
+						Actor:     "alice",
+						EventType: "labels_added",
+						Payload:   `{"labels":["backend"]}`,
+						CreatedAt: mustParseTime(t, "2026-04-14T10:06:00Z"),
+					},
+					{
+						ID:        17,
+						Actor:     "alice",
+						EventType: "labels_removed",
+						Payload:   `{"labels":["backend"]}`,
+						CreatedAt: mustParseTime(t, "2026-04-14T10:07:00Z"),
+					},
+					{
+						ID:        18,
+						Actor:     "alice",
+						EventType: "labels_replaced",
+						Payload:   `{"labels":["cli","tui"]}`,
+						CreatedAt: mustParseTime(t, "2026-04-14T10:08:00Z"),
+					},
+				},
+			},
+		},
+		project: issues.ProjectGraphView{
+			Issues: []issues.IssueSummary{{ID: "tk-1", Title: "target", Status: issues.StatusOpen}},
+		},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rendered := ansiPattern.ReplaceAllString(m.renderActivityTab(), "")
+
+	expectedSnippets := []string{
+		"alice created the issue",
+		"alice set assignee to bob and updated the description",
+		"alice closed the issue (done and verified)",
+		"alice reopened the issue (needed another pass)",
+		"alice added dependency on tk-9",
+		"alice removed dependency on tk-9",
+		"alice added labels: backend",
+		"alice removed labels: backend",
+		"alice replaced labels with: cli, tui",
+	}
+	for _, snippet := range expectedSnippets {
+		if !strings.Contains(rendered, snippet) {
+			t.Fatalf("expected %q in activity render:\n%s", snippet, rendered)
+		}
+	}
+
+	forbiddenSnippets := []string{`"reason"`, `blocker_id`, `{"labels"`, `{"assignee"`, `["backend"]`}
+	for _, snippet := range forbiddenSnippets {
+		if strings.Contains(rendered, snippet) {
+			t.Fatalf("expected activity render to omit raw payload snippet %q:\n%s", snippet, rendered)
+		}
+	}
+}
+
 func TestActivityTabShowsEmptyState(t *testing.T) {
 	t.Parallel()
 
@@ -960,6 +1073,114 @@ func TestActivityTabShowsEmptyState(t *testing.T) {
 	rendered := ansiPattern.ReplaceAllString(m.renderActivityTab(), "")
 	if !strings.Contains(rendered, "0 item(s)") || !strings.Contains(rendered, "No activity yet.") {
 		t.Fatalf("expected activity empty state, got:\n%s", rendered)
+	}
+}
+
+func TestActivityPaneScrollsLongActivityWhenFocused(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		allSummaries: []issues.IssueSummary{
+			{ID: "tk-1", Title: "first", Status: issues.StatusOpen, Type: issues.TypeTask},
+			{ID: "tk-2", Title: "second", Status: issues.StatusOpen, Type: issues.TypeTask},
+		},
+		details: map[string]issues.IssueDetailView{
+			"tk-1": {
+				Issue: issues.Issue{
+					ID:     "tk-1",
+					Title:  "first",
+					Status: issues.StatusOpen,
+					Type:   issues.TypeTask,
+				},
+				Comments: []issues.Comment{
+					{
+						ID:        21,
+						Author:    "alice",
+						Body:      "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\nline 12",
+						CreatedAt: mustParseTime(t, "2026-04-14T10:05:00Z"),
+					},
+				},
+				Events: []issues.Event{
+					{
+						ID:        11,
+						Actor:     "alice",
+						EventType: "issue_created",
+						CreatedAt: mustParseTime(t, "2026-04-14T10:00:00Z"),
+					},
+					{
+						ID:        12,
+						Actor:     "alice",
+						EventType: "labels_replaced",
+						Payload:   `{"labels":["backend","tui"]}`,
+						CreatedAt: mustParseTime(t, "2026-04-14T10:06:00Z"),
+					},
+				},
+			},
+			"tk-2": {
+				Issue: issues.Issue{
+					ID:     "tk-2",
+					Title:  "second",
+					Status: issues.StatusOpen,
+					Type:   issues.TypeTask,
+				},
+			},
+		},
+		focused: map[string]issues.FocusedGraphView{
+			"tk-1": {SelectedID: "tk-1", NodeSummaries: map[string]issues.IssueSummary{"tk-1": {ID: "tk-1", Title: "first", Status: issues.StatusOpen}}},
+			"tk-2": {SelectedID: "tk-2", NodeSummaries: map[string]issues.IssueSummary{"tk-2": {ID: "tk-2", Title: "second", Status: issues.StatusOpen}}},
+		},
+		project: issues.ProjectGraphView{
+			Issues: []issues.IssueSummary{
+				{ID: "tk-1", Title: "first", Status: issues.StatusOpen, Type: issues.TypeTask},
+				{ID: "tk-2", Title: "second", Status: issues.StatusOpen, Type: issues.TypeTask},
+			},
+		},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.focus = paneDetail
+	m.activeTab = tabComments
+
+	initial := ansiPattern.ReplaceAllString(m.renderActiveTabBody(60, 10), "")
+	selectedBefore := m.selected
+
+	if !strings.Contains(initial, "line 1") {
+		t.Fatalf("expected initial activity viewport to show the top of the comment:\n%s", initial)
+	}
+
+	m.handleKey("ctrl+d")
+	m.handleKey("ctrl+d")
+
+	if m.selected != selectedBefore {
+		t.Fatalf("activity viewport scroll should not move browser selection: before=%d after=%d", selectedBefore, m.selected)
+	}
+
+	if m.commentsViewport.y == 0 {
+		t.Fatalf("expected activity viewport to scroll, got %#v", m.commentsViewport)
+	}
+
+	scrolled := ansiPattern.ReplaceAllString(m.renderActiveTabBody(60, 10), "")
+	if initial == scrolled {
+		t.Fatalf("expected activity viewport render to change after scrolling:\n%s", scrolled)
+	}
+
+	if strings.Contains("\n"+scrolled+"\n", "\nline 1\n") {
+		t.Fatalf("expected early comment lines to scroll out of view, got:\n%s", scrolled)
+	}
+
+	m.focus = paneBrowser
+	m.handleKey("j")
+
+	if m.selected != 1 {
+		t.Fatalf("expected browser selection to move once focus returned, got %d", m.selected)
+	}
+
+	if m.commentsViewport.y != 0 {
+		t.Fatalf("expected activity viewport reset after selection changed, got %#v", m.commentsViewport)
 	}
 }
 
