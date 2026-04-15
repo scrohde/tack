@@ -208,6 +208,10 @@ func (o StartupOptions) DataSource() DataSource {
 	return o.Source
 }
 
+func (o StartupOptions) EffectiveFilter() store.ListFilter {
+	return effectiveFilterForSource(o.DataSource(), o.Filter)
+}
+
 func (m *model) Init() tea.Cmd {
 	return scheduleAutoRefresh()
 }
@@ -1641,7 +1645,7 @@ func effectiveFilterForSource(source DataSource, filter store.ListFilter) store.
 }
 
 func (m *model) effectiveFilter() store.ListFilter {
-	return effectiveFilterForSource(m.source, m.filter)
+	return StartupOptions{Source: m.source, Filter: m.filter}.EffectiveFilter()
 }
 
 func (m *model) filterPickerOptions() []filterPickerOption {

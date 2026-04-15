@@ -106,6 +106,12 @@ func TestNewModelDefaultsAllModeToActiveStatuses(t *testing.T) {
 	if header := m.renderHeader(); !strings.Contains(header, "filter status=open,in_progress,blocked") {
 		t.Fatalf("expected header to describe default filter, got %q", header)
 	}
+
+	m.refresh()
+
+	if len(reader.listFilters) != 2 || !slices.Equal(reader.listFilters[1].Statuses, defaultAllIssueStatuses) {
+		t.Fatalf("expected refresh to preserve default statuses, got %#v", reader.listFilters)
+	}
 }
 
 func TestSelectionChangesRefreshActiveDetailWhenUnpinned(t *testing.T) {
@@ -749,6 +755,10 @@ func TestGuidedFilterPickerReadyModeOmitsAssigneeAndClearsExistingValues(t *test
 
 	if len(m.filter.Assignees) != 0 {
 		t.Fatalf("expected ready mode to clear assignee filters, got %#v", m.filter.Assignees)
+	}
+
+	if len(reader.readyFilters) == 0 || len(reader.readyFilters[len(reader.readyFilters)-1].Statuses) != 0 {
+		t.Fatalf("expected ready mode to avoid inheriting the all-issues default status filter, got %#v", reader.readyFilters)
 	}
 
 	m.handleKey("/")

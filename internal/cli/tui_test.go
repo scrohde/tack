@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 
@@ -54,6 +55,104 @@ func TestTUIStartupFlagsSeedOptions(t *testing.T) {
 		len(gotOptions.Filter.Assignees) != 1 || gotOptions.Filter.Assignees[0] != "alice" ||
 		gotOptions.Filter.Limit != 7 {
 		t.Fatalf("unexpected filters: %#v", gotOptions.Filter)
+	}
+}
+
+func TestTUIStartupDefaultsToActiveStatusesWithoutStatusFlag(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+
+	var (
+		gotOptions tui.StartupOptions
+		stdout     bytes.Buffer
+		stderr     bytes.Buffer
+	)
+
+	previous := launchTUI
+	launchTUI = func(_ context.Context, _, _ io.Writer, options tui.StartupOptions) error {
+		gotOptions = options
+		return nil
+	}
+
+	defer func() {
+		launchTUI = previous
+	}()
+
+	err := Execute(context.Background(), []string{"tui"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("tui failed: %v", err)
+	}
+
+	if gotOptions.Source != tui.DataSourceAll {
+		t.Fatalf("unexpected data source: %#v", gotOptions)
+	}
+
+	if !slices.Equal(gotOptions.EffectiveFilter().Statuses, []string{"open", "in_progress", "blocked"}) {
+		t.Fatalf("expected default effective statuses, got %#v", gotOptions.EffectiveFilter())
+	}
+}
+
+func TestTUIStartupExplicitStatusOverridesDefault(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+
+	var (
+		gotOptions tui.StartupOptions
+		stdout     bytes.Buffer
+		stderr     bytes.Buffer
+	)
+
+	previous := launchTUI
+	launchTUI = func(_ context.Context, _, _ io.Writer, options tui.StartupOptions) error {
+		gotOptions = options
+		return nil
+	}
+
+	defer func() {
+		launchTUI = previous
+	}()
+
+	err := Execute(context.Background(), []string{"tui", "--status", " blocked "}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("tui failed: %v", err)
+	}
+
+	if !slices.Equal(gotOptions.EffectiveFilter().Statuses, []string{"blocked"}) {
+		t.Fatalf("expected explicit status to win, got %#v", gotOptions.EffectiveFilter())
+	}
+}
+
+func TestTUIReadyStartupDoesNotApplyAllIssuesDefaultStatuses(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+
+	var (
+		gotOptions tui.StartupOptions
+		stdout     bytes.Buffer
+		stderr     bytes.Buffer
+	)
+
+	previous := launchTUI
+	launchTUI = func(_ context.Context, _, _ io.Writer, options tui.StartupOptions) error {
+		gotOptions = options
+		return nil
+	}
+
+	defer func() {
+		launchTUI = previous
+	}()
+
+	err := Execute(context.Background(), []string{"tui", "--ready"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("tui failed: %v", err)
+	}
+
+	if gotOptions.Source != tui.DataSourceReady {
+		t.Fatalf("unexpected data source: %#v", gotOptions)
+	}
+
+	if len(gotOptions.EffectiveFilter().Statuses) != 0 {
+		t.Fatalf("expected ready startup to keep statuses empty, got %#v", gotOptions.EffectiveFilter())
 	}
 }
 
