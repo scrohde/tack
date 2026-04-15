@@ -1454,6 +1454,10 @@ func TestAutoRefreshReloadsFromDiskAndSchedulesNextTick(t *testing.T) {
 	m.focus = paneDetail
 	m.activeTab = tabProjectGraph
 	m.pinnedID = "tk-1"
+	m.browserViewport = textViewport{y: 3}
+	m.detailsViewport = textViewport{y: 7}
+	m.commentsViewport = textViewport{y: 5}
+	m.projectGraphViewport = graphViewport{x: 12, y: 8}
 
 	other, err := store.Open(filepath.Join(repo, ".tack", "issues.db"))
 	if err != nil {
@@ -1492,6 +1496,22 @@ func TestAutoRefreshReloadsFromDiskAndSchedulesNextTick(t *testing.T) {
 
 	if next.focus != paneDetail || next.activeTab != tabProjectGraph {
 		t.Fatalf("expected focus and tab to survive refresh, got focus=%q tab=%v", next.focus, next.activeTab)
+	}
+
+	if next.browserViewport.y != 3 {
+		t.Fatalf("expected browser viewport preserved, got %#v", next.browserViewport)
+	}
+
+	if next.detailsViewport.y != 7 {
+		t.Fatalf("expected details viewport preserved, got %#v", next.detailsViewport)
+	}
+
+	if next.commentsViewport.y != 5 {
+		t.Fatalf("expected comments viewport preserved, got %#v", next.commentsViewport)
+	}
+
+	if next.projectGraphViewport != (graphViewport{x: 12, y: 8}) {
+		t.Fatalf("expected graph viewport preserved, got %#v", next.projectGraphViewport)
 	}
 }
 
@@ -1574,6 +1594,83 @@ func TestAutoRefreshResetsDetailViewportsWhenPinnedIssueFallsOutOfView(t *testin
 
 	if next.projectGraphViewport != (graphViewport{}) {
 		t.Fatalf("expected graph viewport reset, got %#v", next.projectGraphViewport)
+	}
+}
+
+func TestCtrlRRefreshResetsDetailViewportsWhenPinnedIssueFallsOutOfView(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	first, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "first",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "second",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := newModel(ctx, repo, s, StartupOptions{Source: DataSourceReady})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.closeReader()
+
+	m.pinnedID = first.ID
+	m.focus = paneDetail
+	m.activeTab = tabProjectGraph
+	m.browserViewport = textViewport{y: 4}
+	m.detailsViewport = textViewport{y: 7}
+	m.commentsViewport = textViewport{y: 5}
+	m.projectGraphViewport = graphViewport{x: 9, y: 6}
+
+	other, err := store.Open(filepath.Join(repo, ".tack", "issues.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeReader(other)
+
+	_, err = other.CloseIssue(ctx, first.ID, "done", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.handleKey("ctrl+r")
+
+	if m.pinnedID != "" {
+		t.Fatalf("expected pinned issue cleared after refresh, got %q", m.pinnedID)
+	}
+
+	if m.currentDetailID() != second.ID {
+		t.Fatalf("expected detail view to move to surviving issue, got %q", m.currentDetailID())
+	}
+
+	if m.browserViewport.y != 4 {
+		t.Fatalf("expected browser viewport preserved, got %#v", m.browserViewport)
+	}
+
+	if m.detailsViewport.y != 0 {
+		t.Fatalf("expected details viewport reset, got %#v", m.detailsViewport)
+	}
+
+	if m.commentsViewport.y != 0 {
+		t.Fatalf("expected comments viewport reset, got %#v", m.commentsViewport)
+	}
+
+	if m.projectGraphViewport != (graphViewport{}) {
+		t.Fatalf("expected graph viewport reset, got %#v", m.projectGraphViewport)
 	}
 }
 
