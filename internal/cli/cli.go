@@ -1534,6 +1534,7 @@ func printTUIUsage(w io.Writer, fs *flag.FlagSet) error {
   g            open the graph tab
   G            open the graph tab
   esc          close the picker or return focus
+  auto-refresh refreshes from disk every 5 seconds
   ctrl+r       refresh data from disk`)
 		if err != nil {
 			return err

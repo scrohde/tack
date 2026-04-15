@@ -59,6 +59,10 @@ func TestNewModelLoadsSummariesFromStartupSource(t *testing.T) {
 	if !view.AltScreen {
 		t.Fatalf("expected alt screen view: %#v", view)
 	}
+
+	if cmd := m.Init(); cmd == nil {
+		t.Fatalf("expected Init to schedule auto-refresh")
+	}
 }
 
 func TestSelectionChangesRefreshActiveDetailWhenUnpinned(t *testing.T) {
@@ -846,6 +850,7 @@ func TestDetailsAndActivityTabsRenderTypedDetailContext(t *testing.T) {
 	}
 
 	activity := m.renderActivityTab()
+
 	plainActivity := ansiPattern.ReplaceAllString(activity, "")
 	if !strings.Contains(plainActivity, "3 item(s)") || !strings.Contains(plainActivity, "alice created the issue") || !strings.Contains(plainActivity, "alice claimed the issue, set status to in_progress, and set assignee to alice") || !strings.Contains(plainActivity, "needs follow-up") {
 		t.Fatalf("activity tab did not render merged activity cleanly:\n%s", plainActivity)
@@ -911,6 +916,7 @@ func TestActivityTabMergesCommentsAndEventsChronologically(t *testing.T) {
 	}
 
 	rendered := ansiPattern.ReplaceAllString(m.renderActivityTab(), "")
+
 	indexes := []int{
 		strings.Index(rendered, "alice created the issue"),
 		strings.Index(rendered, "alice added a comment"),
@@ -955,17 +961,6 @@ func TestActivityTabShowsEmptyState(t *testing.T) {
 	if !strings.Contains(rendered, "0 item(s)") || !strings.Contains(rendered, "No activity yet.") {
 		t.Fatalf("expected activity empty state, got:\n%s", rendered)
 	}
-}
-
-func mustParseTime(t *testing.T, raw string) time.Time {
-	t.Helper()
-
-	value, err := time.Parse(time.RFC3339, raw)
-	if err != nil {
-		t.Fatalf("parse time %q: %v", raw, err)
-	}
-
-	return value
 }
 
 func TestDetailsTabOmitsEmptyTransitionReasons(t *testing.T) {
@@ -1369,6 +1364,244 @@ func TestCtrlRRefreshReopensStoreAndReloadsFromDisk(t *testing.T) {
 	if len(m.summaries) != 2 {
 		t.Fatalf("expected refreshed summaries from disk, got %#v", m.summaries)
 	}
+}
+
+func TestCtrlRRefreshPreservesViewportStateForSameDetailTarget(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	first, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "first",
+		Description: strings.Repeat("detail line\n", 24),
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := newModel(ctx, repo, s, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.closeReader()
+
+	m.pinnedID = first.ID
+	m.focus = paneDetail
+	m.activeTab = tabProjectGraph
+	m.browserViewport = textViewport{y: 3}
+	m.detailsViewport = textViewport{y: 7}
+	m.commentsViewport = textViewport{y: 5}
+	m.projectGraphViewport = graphViewport{x: 12, y: 8}
+
+	other, err := store.Open(filepath.Join(repo, ".tack", "issues.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeReader(other)
+
+	_, err = other.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "second",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.handleKey("ctrl+r")
+
+	if m.browserViewport.y != 3 {
+		t.Fatalf("expected browser viewport preserved, got %#v", m.browserViewport)
+	}
+
+	if m.detailsViewport.y != 7 {
+		t.Fatalf("expected details viewport preserved, got %#v", m.detailsViewport)
+	}
+
+	if m.commentsViewport.y != 5 {
+		t.Fatalf("expected comments viewport preserved, got %#v", m.commentsViewport)
+	}
+
+	if m.projectGraphViewport != (graphViewport{x: 12, y: 8}) {
+		t.Fatalf("expected graph viewport preserved, got %#v", m.projectGraphViewport)
+	}
+}
+
+func TestAutoRefreshReloadsFromDiskAndSchedulesNextTick(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	_, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "first",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := newModel(ctx, repo, s, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.closeReader()
+
+	m.focus = paneDetail
+	m.activeTab = tabProjectGraph
+	m.pinnedID = "tk-1"
+
+	other, err := store.Open(filepath.Join(repo, ".tack", "issues.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeReader(other)
+
+	_, err = other.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "second",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, cmd := m.Update(autoRefreshMsg{})
+
+	next, ok := updated.(*model)
+	if !ok {
+		t.Fatalf("expected model update, got %T", updated)
+	}
+
+	if cmd == nil {
+		t.Fatalf("expected auto-refresh to schedule the next tick")
+	}
+
+	if len(next.summaries) != 2 {
+		t.Fatalf("expected refreshed summaries from disk, got %#v", next.summaries)
+	}
+
+	if next.pinnedID != "tk-1" {
+		t.Fatalf("expected pinned issue to survive refresh, got %q", next.pinnedID)
+	}
+
+	if next.focus != paneDetail || next.activeTab != tabProjectGraph {
+		t.Fatalf("expected focus and tab to survive refresh, got focus=%q tab=%v", next.focus, next.activeTab)
+	}
+}
+
+func TestAutoRefreshResetsDetailViewportsWhenPinnedIssueFallsOutOfView(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	first, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "first",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "second",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := newModel(ctx, repo, s, StartupOptions{Source: DataSourceReady})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.closeReader()
+
+	m.pinnedID = first.ID
+	m.focus = paneDetail
+	m.activeTab = tabProjectGraph
+	m.browserViewport = textViewport{y: 4}
+	m.detailsViewport = textViewport{y: 7}
+	m.commentsViewport = textViewport{y: 5}
+	m.projectGraphViewport = graphViewport{x: 9, y: 6}
+
+	other, err := store.Open(filepath.Join(repo, ".tack", "issues.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeReader(other)
+
+	_, err = other.CloseIssue(ctx, first.ID, "done", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, _ := m.Update(autoRefreshMsg{})
+
+	next, ok := updated.(*model)
+	if !ok {
+		t.Fatalf("expected model update, got %T", updated)
+	}
+
+	if next.pinnedID != "" {
+		t.Fatalf("expected pinned issue cleared after refresh, got %q", next.pinnedID)
+	}
+
+	if next.currentDetailID() != second.ID {
+		t.Fatalf("expected detail view to move to surviving issue, got %q", next.currentDetailID())
+	}
+
+	if next.browserViewport.y != 4 {
+		t.Fatalf("expected browser viewport preserved, got %#v", next.browserViewport)
+	}
+
+	if next.detailsViewport.y != 0 {
+		t.Fatalf("expected details viewport reset, got %#v", next.detailsViewport)
+	}
+
+	if next.commentsViewport.y != 0 {
+		t.Fatalf("expected comments viewport reset, got %#v", next.commentsViewport)
+	}
+
+	if next.projectGraphViewport != (graphViewport{}) {
+		t.Fatalf("expected graph viewport reset, got %#v", next.projectGraphViewport)
+	}
+}
+
+func TestExpandedHelpMentionsAutoRefresh(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{project: issues.ProjectGraphView{}}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	help := m.renderExpandedHelp()
+	if !strings.Contains(help, "auto-refresh runs every 5 seconds") || !strings.Contains(help, "ctrl+r refreshes immediately from disk") {
+		t.Fatalf("expected expanded help to mention auto-refresh, got:\n%s", help)
+	}
+}
+
+func mustParseTime(t *testing.T, raw string) time.Time {
+	t.Helper()
+
+	value, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		t.Fatalf("parse time %q: %v", raw, err)
+	}
+
+	return value
 }
 
 type fakeReader struct {

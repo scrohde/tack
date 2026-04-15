@@ -68,3 +68,24 @@ func TestTUIUsesRepoInitializationErrors(t *testing.T) {
 		t.Fatalf("expected init error, got %v", err)
 	}
 }
+
+func TestTUIHelpMentionsAutoRefresh(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+
+	var stdout, stderr bytes.Buffer
+
+	err := Execute(context.Background(), []string{"tui", "--help"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("expected help to succeed, got %v", err)
+	}
+
+	rendered := stdout.String()
+	if !strings.Contains(rendered, "auto-refresh refreshes from disk every 5 seconds") {
+		t.Fatalf("expected help to mention automatic refresh, got:\n%s", rendered)
+	}
+
+	if !strings.Contains(rendered, "ctrl+r       refresh data from disk") {
+		t.Fatalf("expected help to preserve manual refresh guidance, got:\n%s", rendered)
+	}
+}

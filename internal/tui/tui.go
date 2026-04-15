@@ -58,6 +58,10 @@ const (
 
 var detailTabNames = []string{"Details", "Activity", "Project Graph"}
 
+const autoRefreshInterval = 5 * time.Second
+
+type autoRefreshMsg struct{}
+
 type filterPickerMode string
 
 const (
@@ -138,6 +142,14 @@ type textViewport struct {
 	y int
 }
 
+type refreshViewportState struct {
+	detailID             string
+	browserViewport      textViewport
+	detailsViewport      textViewport
+	commentsViewport     textViewport
+	projectGraphViewport graphViewport
+}
+
 func Run(ctx context.Context, stdout, _ io.Writer, options StartupOptions) error {
 	repoRoot, s, err := store.OpenRepo(".")
 	if err != nil {
@@ -191,7 +203,7 @@ func (o StartupOptions) DataSource() DataSource {
 }
 
 func (m *model) Init() tea.Cmd {
-	return nil
+	return scheduleAutoRefresh()
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -206,6 +218,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		return m, nil
+	case autoRefreshMsg:
+		m.refresh()
+		return m, scheduleAutoRefresh()
 	case tea.KeyPressMsg:
 		return m, m.handleKey(msg.String())
 	}
@@ -443,7 +458,8 @@ func (m *model) renderExpandedHelp() string {
 		"In the limit prompt, type digits and press enter; an empty value clears the limit",
 		"enter pins the selected issue in the detail pane",
 		"esc returns focus to the browser and clears the current pin",
-		"r toggles between all issues and ready issues, ctrl+r refreshes from disk",
+		"auto-refresh runs every 5 seconds; r toggles all issues vs ready issues",
+		"ctrl+r refreshes immediately from disk",
 		"g or G opens Project Graph",
 		"In Details and Activity with detail focus, j/k, up/down, pgup/pgdown, and ctrl+u/ctrl+d scroll",
 		"In the graph tab with detail focus, h/l pan horizontally while j/k and up/down pan vertically",
@@ -562,6 +578,7 @@ func (m *model) renderActivityTab() string {
 	for _, entry := range entries {
 		lines = append(lines, "")
 		lines = append(lines, sectionTitleStyle.Render(entry.title))
+
 		lines = append(lines, mutedTextStyle.Render(entry.createdAt.Format("2006-01-02 15:04")))
 		if entry.body != "" {
 			lines = append(lines, entry.body)
@@ -635,11 +652,13 @@ func summarizeEvent(event issues.Event) string {
 		if blockerID := stringValue(payload["blocker_id"]); blockerID != "" {
 			return fmt.Sprintf("%s added dependency on %s", actor, blockerID)
 		}
+
 		return actor + " added a dependency"
 	case "dependency_removed":
 		if blockerID := stringValue(payload["blocker_id"]); blockerID != "" {
 			return fmt.Sprintf("%s removed dependency on %s", actor, blockerID)
 		}
+
 		return actor + " removed a dependency"
 	case "labels_added":
 		return summarizeLabelEvent(actor, "added", payload)
@@ -666,16 +685,20 @@ func summarizeIssueUpdatedEvent(actor string, payload map[string]any) string {
 		if clause := summarizeIssueUpdatedField(field, value); clause != "" {
 			clauses = append(clauses, clause)
 		}
+
 		seen[field] = struct{}{}
 	}
 
 	var extraFields []string
+
 	for field := range payload {
 		if _, ok := seen[field]; ok {
 			continue
 		}
+
 		extraFields = append(extraFields, field)
 	}
+
 	sort.Strings(extraFields)
 
 	for _, field := range extraFields {
@@ -697,6 +720,7 @@ func summarizeIssueUpdatedField(field string, value any) string {
 		if boolValue(value) {
 			return "claimed the issue"
 		}
+
 		return ""
 	case "status":
 		return "set status to " + blankIfEmpty(stringValue(value))
@@ -705,6 +729,7 @@ func summarizeIssueUpdatedField(field string, value any) string {
 		if assignee == "" {
 			return "cleared the assignee"
 		}
+
 		return "set assignee to " + assignee
 	case "priority":
 		return "set priority to " + blankIfEmpty(stringValue(value))
@@ -717,6 +742,7 @@ func summarizeIssueUpdatedField(field string, value any) string {
 		if parentID == "" {
 			return "cleared the parent"
 		}
+
 		return "set parent to " + parentID
 	case "description":
 		return "updated the description"
@@ -779,7 +805,9 @@ func parseEventPayload(raw string) map[string]any {
 	}
 
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+
+	err := json.Unmarshal([]byte(raw), &payload)
+	if err != nil {
 		return map[string]any{}
 	}
 
@@ -930,6 +958,8 @@ func (m *model) toggleSource() {
 }
 
 func (m *model) refresh() {
+	viewportState := m.captureRefreshViewportState()
+
 	err := m.reopenReader()
 	if err != nil {
 		m.lastError = err
@@ -939,7 +969,10 @@ func (m *model) refresh() {
 	err = m.reload()
 	if err != nil {
 		m.lastError = err
+		return
 	}
+
+	m.restoreRefreshViewportState(viewportState)
 }
 
 func (m *model) reload() error {
@@ -1023,6 +1056,28 @@ func (m *model) syncDetailViews() {
 	m.resetTextViewport(tabComments)
 	m.resetGraphViewport(tabProjectGraph)
 	m.lastError = nil
+}
+
+func (m *model) captureRefreshViewportState() refreshViewportState {
+	return refreshViewportState{
+		detailID:             m.currentDetailID(),
+		browserViewport:      m.browserViewport,
+		detailsViewport:      m.detailsViewport,
+		commentsViewport:     m.commentsViewport,
+		projectGraphViewport: m.projectGraphViewport,
+	}
+}
+
+func (m *model) restoreRefreshViewportState(state refreshViewportState) {
+	m.browserViewport = state.browserViewport
+
+	if state.detailID == "" || state.detailID != m.currentDetailID() {
+		return
+	}
+
+	m.detailsViewport = state.detailsViewport
+	m.commentsViewport = state.commentsViewport
+	m.projectGraphViewport = state.projectGraphViewport
 }
 
 func (m *model) openFilterPicker() {
@@ -1427,6 +1482,12 @@ func (m *model) reopenReader() error {
 
 func (m *model) closeReader() {
 	closeReader(m.reader)
+}
+
+func scheduleAutoRefresh() tea.Cmd {
+	return tea.Tick(autoRefreshInterval, func(time.Time) tea.Msg {
+		return autoRefreshMsg{}
+	})
 }
 
 func summaryLine(summary issues.IssueSummary) string {
