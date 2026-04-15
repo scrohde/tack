@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"charm.land/lipgloss/v2"
 
@@ -133,7 +134,7 @@ func TestTabNavigationAndEscapeAreDeterministic(t *testing.T) {
 	m.handleKey("right")
 
 	if m.activeTab != tabComments {
-		t.Fatalf("expected comments tab, got %d", m.activeTab)
+		t.Fatalf("expected activity tab, got %d", m.activeTab)
 	}
 
 	m.handleKey("right")
@@ -145,7 +146,7 @@ func TestTabNavigationAndEscapeAreDeterministic(t *testing.T) {
 	m.handleKey("left")
 
 	if m.activeTab != tabComments {
-		t.Fatalf("expected comments tab after reverse, got %d", m.activeTab)
+		t.Fatalf("expected activity tab after reverse, got %d", m.activeTab)
 	}
 
 	m.handleKey("enter")
@@ -762,7 +763,7 @@ func TestFilterOptionsUseCurrentSourceAndFilter(t *testing.T) {
 	}
 }
 
-func TestDetailsAndCommentsTabsRenderTypedDetailContext(t *testing.T) {
+func TestDetailsAndActivityTabsRenderTypedDetailContext(t *testing.T) {
 	t.Parallel()
 
 	reader := &fakeReader{
@@ -781,7 +782,27 @@ func TestDetailsAndCommentsTabsRenderTypedDetailContext(t *testing.T) {
 					Description: "# Context\n\n- detail body\n- next step",
 				},
 				Comments: []issues.Comment{
-					{Author: "alice", Body: "needs follow-up"},
+					{
+						ID:        21,
+						Author:    "alice",
+						Body:      "needs follow-up",
+						CreatedAt: mustParseTime(t, "2026-04-14T10:05:00Z"),
+					},
+				},
+				Events: []issues.Event{
+					{
+						ID:        11,
+						Actor:     "alice",
+						EventType: "issue_created",
+						CreatedAt: mustParseTime(t, "2026-04-14T10:00:00Z"),
+					},
+					{
+						ID:        12,
+						Actor:     "alice",
+						EventType: "issue_updated",
+						Payload:   `{"status":"in_progress","assignee":"alice","claim":true}`,
+						CreatedAt: mustParseTime(t, "2026-04-14T10:03:00Z"),
+					},
 				},
 				Dependencies: issues.DependencyList{
 					IssueID:   "tk-2",
@@ -824,10 +845,127 @@ func TestDetailsAndCommentsTabsRenderTypedDetailContext(t *testing.T) {
 		t.Fatalf("details tab did not render markdown description cleanly:\n%s", plainDetails)
 	}
 
-	comments := m.renderCommentsTab()
-	if !strings.Contains(comments, "1 comment(s)") || !strings.Contains(comments, "needs follow-up") {
-		t.Fatalf("comments tab did not render typed comments:\n%s", comments)
+	activity := m.renderActivityTab()
+	plainActivity := ansiPattern.ReplaceAllString(activity, "")
+	if !strings.Contains(plainActivity, "3 item(s)") || !strings.Contains(plainActivity, "alice created the issue") || !strings.Contains(plainActivity, "alice claimed the issue, set status to in_progress, and set assignee to alice") || !strings.Contains(plainActivity, "needs follow-up") {
+		t.Fatalf("activity tab did not render merged activity cleanly:\n%s", plainActivity)
 	}
+}
+
+func TestActivityTabMergesCommentsAndEventsChronologically(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		allSummaries: []issues.IssueSummary{
+			{ID: "tk-1", Title: "target", Status: issues.StatusOpen, Type: issues.TypeTask},
+		},
+		details: map[string]issues.IssueDetailView{
+			"tk-1": {
+				Issue: issues.Issue{ID: "tk-1", Title: "target", Status: issues.StatusOpen, Type: issues.TypeTask},
+				Comments: []issues.Comment{
+					{
+						ID:        22,
+						Author:    "alice",
+						Body:      "body from the real comment",
+						CreatedAt: mustParseTime(t, "2026-04-14T10:02:00Z"),
+					},
+				},
+				Events: []issues.Event{
+					{
+						ID:        10,
+						Actor:     "alice",
+						EventType: "issue_created",
+						CreatedAt: mustParseTime(t, "2026-04-14T10:00:00Z"),
+					},
+					{
+						ID:        11,
+						Actor:     "alice",
+						EventType: "comment_added",
+						Payload:   `{"body":"body from the real comment"}`,
+						CreatedAt: mustParseTime(t, "2026-04-14T10:02:00Z"),
+					},
+					{
+						ID:        12,
+						Actor:     "alice",
+						EventType: "labels_replaced",
+						Payload:   `{"labels":["backend","tui"]}`,
+						CreatedAt: mustParseTime(t, "2026-04-14T10:03:00Z"),
+					},
+					{
+						ID:        13,
+						Actor:     "alice",
+						EventType: "mystery_event",
+						CreatedAt: mustParseTime(t, "2026-04-14T10:04:00Z"),
+					},
+				},
+			},
+		},
+		project: issues.ProjectGraphView{
+			Issues: []issues.IssueSummary{{ID: "tk-1", Title: "target", Status: issues.StatusOpen}},
+		},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rendered := ansiPattern.ReplaceAllString(m.renderActivityTab(), "")
+	indexes := []int{
+		strings.Index(rendered, "alice created the issue"),
+		strings.Index(rendered, "alice added a comment"),
+		strings.Index(rendered, "body from the real comment"),
+		strings.Index(rendered, "alice replaced labels with: backend, tui"),
+		strings.Index(rendered, "alice recorded mystery event"),
+	}
+	for i, idx := range indexes {
+		if idx < 0 {
+			t.Fatalf("expected activity entry %d in render:\n%s", i, rendered)
+		}
+	}
+
+	for i := 1; i < len(indexes); i++ {
+		if indexes[i-1] >= indexes[i] {
+			t.Fatalf("expected chronological activity ordering, got:\n%s", rendered)
+		}
+	}
+}
+
+func TestActivityTabShowsEmptyState(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		allSummaries: []issues.IssueSummary{
+			{ID: "tk-1", Title: "target", Status: issues.StatusOpen, Type: issues.TypeTask},
+		},
+		details: map[string]issues.IssueDetailView{
+			"tk-1": {Issue: issues.Issue{ID: "tk-1", Title: "target", Status: issues.StatusOpen, Type: issues.TypeTask}},
+		},
+		project: issues.ProjectGraphView{
+			Issues: []issues.IssueSummary{{ID: "tk-1", Title: "target", Status: issues.StatusOpen}},
+		},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rendered := ansiPattern.ReplaceAllString(m.renderActivityTab(), "")
+	if !strings.Contains(rendered, "0 item(s)") || !strings.Contains(rendered, "No activity yet.") {
+		t.Fatalf("expected activity empty state, got:\n%s", rendered)
+	}
+}
+
+func mustParseTime(t *testing.T, raw string) time.Time {
+	t.Helper()
+
+	value, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		t.Fatalf("parse time %q: %v", raw, err)
+	}
+
+	return value
 }
 
 func TestDetailsTabOmitsEmptyTransitionReasons(t *testing.T) {

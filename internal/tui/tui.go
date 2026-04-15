@@ -2,11 +2,14 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
@@ -53,7 +56,7 @@ const (
 	tabProjectGraph
 )
 
-var detailTabNames = []string{"Details", "Comments", "Project Graph"}
+var detailTabNames = []string{"Details", "Activity", "Project Graph"}
 
 type filterPickerMode string
 
@@ -442,7 +445,7 @@ func (m *model) renderExpandedHelp() string {
 		"esc returns focus to the browser and clears the current pin",
 		"r toggles between all issues and ready issues, ctrl+r refreshes from disk",
 		"g or G opens Project Graph",
-		"In Details and Comments with detail focus, j/k, up/down, pgup/pgdown, and ctrl+u/ctrl+d scroll",
+		"In Details and Activity with detail focus, j/k, up/down, pgup/pgdown, and ctrl+u/ctrl+d scroll",
 		"In the graph tab with detail focus, h/l pan horizontally while j/k and up/down pan vertically",
 	}, "\n")
 }
@@ -488,7 +491,7 @@ func (m *model) renderDetailPane(width, height int) string {
 func (m *model) renderActiveTabBody(width, height int) string {
 	switch m.activeTab {
 	case tabComments:
-		return m.renderTextViewport(&m.commentsViewport, height, m.renderCommentsTab())
+		return m.renderTextViewport(&m.commentsViewport, height, m.renderActivityTab())
 	case tabProjectGraph:
 		return m.renderProjectGraphTab(width, height)
 	default:
@@ -539,30 +542,311 @@ func (m *model) renderDetailsTab(width int) string {
 	return strings.Join(lines, "\n")
 }
 
-func (m *model) renderCommentsTab() string {
+func (m *model) renderActivityTab() string {
 	if m.currentDetailID() == "" {
 		return m.renderEmptyDetailState()
 	}
 
+	entries := buildActivityEntries(m.detailView.Comments, m.detailView.Events)
 	lines := []string{
 		detailTitleStyle.Render(m.detailView.Issue.Title),
 		metaLine("issue", m.detailView.Issue.ID),
-		metaLine("comments", fmt.Sprintf("%d comment(s)", len(m.detailView.Comments))),
+		metaLine("activity", fmt.Sprintf("%d item(s)", len(entries))),
 	}
 
-	if len(m.detailView.Comments) == 0 {
-		lines = append(lines, "", mutedTextStyle.Render("No comments yet."))
+	if len(entries) == 0 {
+		lines = append(lines, "", mutedTextStyle.Render("No activity yet."))
 		return strings.Join(lines, "\n")
 	}
 
-	for _, comment := range m.detailView.Comments {
+	for _, entry := range entries {
 		lines = append(lines, "")
-		lines = append(lines, sectionTitleStyle.Render(comment.Author))
-		lines = append(lines, mutedTextStyle.Render(comment.CreatedAt.Format("2006-01-02 15:04")))
-		lines = append(lines, comment.Body)
+		lines = append(lines, sectionTitleStyle.Render(entry.title))
+		lines = append(lines, mutedTextStyle.Render(entry.createdAt.Format("2006-01-02 15:04")))
+		if entry.body != "" {
+			lines = append(lines, entry.body)
+		}
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+type activityEntry struct {
+	createdAt time.Time
+	sortKind  int
+	sortID    int64
+	title     string
+	body      string
+}
+
+func buildActivityEntries(comments []issues.Comment, events []issues.Event) []activityEntry {
+	entries := make([]activityEntry, 0, len(comments)+len(events))
+
+	for _, event := range events {
+		entries = append(entries, activityEntry{
+			createdAt: event.CreatedAt,
+			sortKind:  0,
+			sortID:    event.ID,
+			title:     summarizeEvent(event),
+		})
+	}
+
+	for _, comment := range comments {
+		entries = append(entries, activityEntry{
+			createdAt: comment.CreatedAt,
+			sortKind:  1,
+			sortID:    comment.ID,
+			title:     fmt.Sprintf("%s commented", actorLabel(comment.Author)),
+			body:      comment.Body,
+		})
+	}
+
+	sort.SliceStable(entries, func(i, j int) bool {
+		if !entries[i].createdAt.Equal(entries[j].createdAt) {
+			return entries[i].createdAt.Before(entries[j].createdAt)
+		}
+
+		if entries[i].sortKind != entries[j].sortKind {
+			return entries[i].sortKind < entries[j].sortKind
+		}
+
+		return entries[i].sortID < entries[j].sortID
+	})
+
+	return entries
+}
+
+func summarizeEvent(event issues.Event) string {
+	payload := parseEventPayload(event.Payload)
+	actor := actorLabel(event.Actor)
+
+	switch event.EventType {
+	case "issue_created":
+		return actor + " created the issue"
+	case "issue_updated":
+		return summarizeIssueUpdatedEvent(actor, payload)
+	case "issue_closed":
+		return actor + appendReason("closed the issue", payload)
+	case "issue_reopened":
+		return actor + appendReason("reopened the issue", payload)
+	case "comment_added":
+		return actor + " added a comment"
+	case "dependency_added":
+		if blockerID := stringValue(payload["blocker_id"]); blockerID != "" {
+			return fmt.Sprintf("%s added dependency on %s", actor, blockerID)
+		}
+		return actor + " added a dependency"
+	case "dependency_removed":
+		if blockerID := stringValue(payload["blocker_id"]); blockerID != "" {
+			return fmt.Sprintf("%s removed dependency on %s", actor, blockerID)
+		}
+		return actor + " removed a dependency"
+	case "labels_added":
+		return summarizeLabelEvent(actor, "added", payload)
+	case "labels_removed":
+		return summarizeLabelEvent(actor, "removed", payload)
+	case "labels_replaced":
+		return summarizeReplacedLabelsEvent(actor, payload)
+	default:
+		return fmt.Sprintf("%s recorded %s", actor, humanizeToken(event.EventType))
+	}
+}
+
+func summarizeIssueUpdatedEvent(actor string, payload map[string]any) string {
+	clauses := make([]string, 0, len(payload))
+	seen := map[string]struct{}{}
+	orderedFields := []string{"claim", "status", "assignee", "priority", "type", "title", "parent_id", "description"}
+
+	for _, field := range orderedFields {
+		value, ok := payload[field]
+		if !ok {
+			continue
+		}
+
+		if clause := summarizeIssueUpdatedField(field, value); clause != "" {
+			clauses = append(clauses, clause)
+		}
+		seen[field] = struct{}{}
+	}
+
+	var extraFields []string
+	for field := range payload {
+		if _, ok := seen[field]; ok {
+			continue
+		}
+		extraFields = append(extraFields, field)
+	}
+	sort.Strings(extraFields)
+
+	for _, field := range extraFields {
+		if clause := summarizeIssueUpdatedField(field, payload[field]); clause != "" {
+			clauses = append(clauses, clause)
+		}
+	}
+
+	if len(clauses) == 0 {
+		return actor + " updated the issue"
+	}
+
+	return actor + " " + joinClauses(clauses)
+}
+
+func summarizeIssueUpdatedField(field string, value any) string {
+	switch field {
+	case "claim":
+		if boolValue(value) {
+			return "claimed the issue"
+		}
+		return ""
+	case "status":
+		return "set status to " + blankIfEmpty(stringValue(value))
+	case "assignee":
+		assignee := stringValue(value)
+		if assignee == "" {
+			return "cleared the assignee"
+		}
+		return "set assignee to " + assignee
+	case "priority":
+		return "set priority to " + blankIfEmpty(stringValue(value))
+	case "type":
+		return "set type to " + blankIfEmpty(stringValue(value))
+	case "title":
+		return fmt.Sprintf("renamed the issue to %q", stringValue(value))
+	case "parent_id":
+		parentID := stringValue(value)
+		if parentID == "" {
+			return "cleared the parent"
+		}
+		return "set parent to " + parentID
+	case "description":
+		return "updated the description"
+	default:
+		return fmt.Sprintf("updated %s to %s", humanizeToken(field), formatPayloadValue(value))
+	}
+}
+
+func summarizeLabelEvent(actor, action string, payload map[string]any) string {
+	labels := strings.Join(labelsFromPayload(payload), ", ")
+	if labels == "" {
+		return fmt.Sprintf("%s %s labels", actor, action)
+	}
+
+	return fmt.Sprintf("%s %s labels: %s", actor, action, labels)
+}
+
+func summarizeReplacedLabelsEvent(actor string, payload map[string]any) string {
+	labels := strings.Join(labelsFromPayload(payload), ", ")
+	if labels == "" {
+		return actor + " cleared all labels"
+	}
+
+	return fmt.Sprintf("%s replaced labels with: %s", actor, labels)
+}
+
+func labelsFromPayload(payload map[string]any) []string {
+	raw, ok := payload["labels"]
+	if !ok {
+		return nil
+	}
+
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+
+	labels := make([]string, 0, len(items))
+	for _, item := range items {
+		if label := stringValue(item); label != "" {
+			labels = append(labels, label)
+		}
+	}
+
+	return labels
+}
+
+func appendReason(action string, payload map[string]any) string {
+	reason := stringValue(payload["reason"])
+	if reason == "" {
+		return " " + action
+	}
+
+	return fmt.Sprintf(" %s (%s)", action, reason)
+}
+
+func parseEventPayload(raw string) map[string]any {
+	if strings.TrimSpace(raw) == "" {
+		return map[string]any{}
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return map[string]any{}
+	}
+
+	return payload
+}
+
+func actorLabel(actor string) string {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		return "Someone"
+	}
+
+	return actor
+}
+
+func joinClauses(parts []string) string {
+	switch len(parts) {
+	case 0:
+		return ""
+	case 1:
+		return parts[0]
+	case 2:
+		return parts[0] + " and " + parts[1]
+	default:
+		return strings.Join(parts[:len(parts)-1], ", ") + ", and " + parts[len(parts)-1]
+	}
+}
+
+func humanizeToken(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "details"
+	}
+
+	return strings.ReplaceAll(value, "_", " ")
+}
+
+func stringValue(value any) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case fmt.Stringer:
+		return strings.TrimSpace(v.String())
+	default:
+		return strings.TrimSpace(fmt.Sprint(value))
+	}
+}
+
+func boolValue(value any) bool {
+	switch v := value.(type) {
+	case bool:
+		return v
+	default:
+		return false
+	}
+}
+
+func formatPayloadValue(value any) string {
+	if value == nil {
+		return blankIfEmpty("")
+	}
+
+	if text := stringValue(value); text != "" {
+		return text
+	}
+
+	return blankIfEmpty("")
 }
 
 func (m *model) renderProjectGraphTab(width, height int) string {
