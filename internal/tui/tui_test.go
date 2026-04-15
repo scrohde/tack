@@ -475,17 +475,6 @@ func TestGuidedFilterPickerUpdatesFilterAndSummaries(t *testing.T) {
 	t.Parallel()
 
 	reader := &fakeReader{
-		filterValuesByRequest: func(source store.FilterValueSource, key store.FilterValueKey, filter store.ListFilter) []string {
-			if source != store.FilterValueSourceAll {
-				t.Fatalf("unexpected source: %q", source)
-			}
-
-			if key != store.FilterValueKeyStatus {
-				t.Fatalf("unexpected key: %q", key)
-			}
-
-			return []string{issues.StatusOpen, issues.StatusBlocked}
-		},
 		listByFilter: func(filter store.ListFilter) []issues.IssueSummary {
 			if len(filter.Statuses) == 1 && filter.Statuses[0] == "blocked" {
 				return []issues.IssueSummary{
@@ -521,8 +510,10 @@ func TestGuidedFilterPickerUpdatesFilterAndSummaries(t *testing.T) {
 
 	m.handleKey("/")
 	m.handleKey("enter")
+	m.handleKey("space")
 	m.handleKey("down")
 	m.handleKey("space")
+	m.handleKey("down")
 	m.handleKey("enter")
 
 	if len(m.filter.Statuses) != 1 || m.filter.Statuses[0] != "blocked" {
@@ -540,6 +531,95 @@ func TestGuidedFilterPickerUpdatesFilterAndSummaries(t *testing.T) {
 	header := m.renderHeader()
 	if !strings.Contains(header, "filter status=blocked") || !strings.Contains(header, "1 issues") {
 		t.Fatalf("unexpected header after filter update: %s", header)
+	}
+}
+
+func TestGuidedStatusFilterPickerShowsAllValuesAndMarksImplicitDefaultSelected(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		allSummaries: []issues.IssueSummary{
+			{ID: "tk-1", Title: "open issue", Status: issues.StatusOpen, Type: issues.TypeTask},
+			{ID: "tk-2", Title: "closed issue", Status: issues.StatusClosed, Type: issues.TypeBug},
+		},
+		details: map[string]issues.IssueDetailView{
+			"tk-1": {Issue: issues.Issue{ID: "tk-1", Title: "open issue", Status: issues.StatusOpen}},
+		},
+		project: issues.ProjectGraphView{
+			Issues: []issues.IssueSummary{
+				{ID: "tk-1", Title: "open issue", Status: issues.StatusOpen},
+				{ID: "tk-2", Title: "closed issue", Status: issues.StatusClosed},
+			},
+		},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.handleKey("/")
+	m.handleKey("enter")
+
+	if !slices.Equal(m.filterPicker.values, []string{issues.StatusOpen, issues.StatusInProgress, issues.StatusBlocked, issues.StatusClosed}) {
+		t.Fatalf("expected status picker to show all statuses, got %#v", m.filterPicker.values)
+	}
+
+	for _, status := range defaultAllIssueStatuses {
+		if _, ok := m.filterPicker.selected[status]; !ok {
+			t.Fatalf("expected default status %q to be selected, got %#v", status, m.filterPicker.selected)
+		}
+	}
+
+	if _, ok := m.filterPicker.selected[issues.StatusClosed]; ok {
+		t.Fatalf("expected non-default closed status to remain unselected, got %#v", m.filterPicker.selected)
+	}
+}
+
+func TestGuidedStatusFilterPickerTogglesImplicitDefaultNormally(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		listByFilter: func(filter store.ListFilter) []issues.IssueSummary {
+			if slices.Equal(filter.Statuses, []string{issues.StatusInProgress, issues.StatusBlocked}) {
+				return []issues.IssueSummary{
+					{ID: "tk-2", Title: "active issue", Status: issues.StatusBlocked, Type: issues.TypeBug},
+				}
+			}
+
+			return []issues.IssueSummary{
+				{ID: "tk-1", Title: "open issue", Status: issues.StatusOpen, Type: issues.TypeTask},
+				{ID: "tk-2", Title: "active issue", Status: issues.StatusBlocked, Type: issues.TypeBug},
+			}
+		},
+		details: map[string]issues.IssueDetailView{
+			"tk-1": {Issue: issues.Issue{ID: "tk-1", Title: "open issue", Status: issues.StatusOpen}},
+			"tk-2": {Issue: issues.Issue{ID: "tk-2", Title: "active issue", Status: issues.StatusBlocked}},
+		},
+		project: issues.ProjectGraphView{
+			Issues: []issues.IssueSummary{
+				{ID: "tk-1", Title: "open issue", Status: issues.StatusOpen},
+				{ID: "tk-2", Title: "active issue", Status: issues.StatusBlocked},
+			},
+		},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.handleKey("/")
+	m.handleKey("enter")
+	m.handleKey("space")
+	m.handleKey("enter")
+
+	if !slices.Equal(m.filter.Statuses, []string{issues.StatusInProgress, issues.StatusBlocked}) {
+		t.Fatalf("expected only the toggled status to change, got %#v", m.filter.Statuses)
+	}
+
+	if len(reader.listFilters) < 2 || !slices.Equal(reader.listFilters[len(reader.listFilters)-1].Statuses, []string{issues.StatusInProgress, issues.StatusBlocked}) {
+		t.Fatalf("expected reload to keep the remaining selected defaults, got %#v", reader.listFilters)
 	}
 }
 

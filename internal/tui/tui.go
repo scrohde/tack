@@ -1154,12 +1154,24 @@ func (m *model) handleFilterPickerKeyList(key string) tea.Cmd {
 }
 
 func (m *model) openFilterValuePicker(key filterPickerKey) error {
-	values, err := m.filterOptions(key.storeKey())
-	if err != nil {
-		return err
+	values := []string(nil)
+	if key == filterPickerKeyStatus {
+		values = append(values, issues.StatusOpen, issues.StatusInProgress, issues.StatusBlocked, issues.StatusClosed)
+	} else {
+		var err error
+
+		values, err = m.filterOptions(key.storeKey())
+		if err != nil {
+			return err
+		}
 	}
 
 	selectedValues := filterValuesForKey(m.filter, key)
+
+	if key == filterPickerKeyStatus && len(selectedValues) == 0 {
+		selectedValues = filterValuesForKey(m.effectiveFilter(), key)
+	}
+
 	values = mergeFilterValues(values, selectedValues)
 
 	selected := make(map[string]struct{}, len(selectedValues))
