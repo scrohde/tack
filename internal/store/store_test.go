@@ -727,6 +727,14 @@ func TestIssueDetailViewIncludesCommentsDependenciesAndRelatedSummaries(t *testi
 		t.Fatalf("unexpected comments: %#v", view.Comments)
 	}
 
+	if len(view.Events) != 2 {
+		t.Fatalf("unexpected events: %#v", view.Events)
+	}
+
+	if view.Events[0].EventType != "issue_created" || view.Events[1].EventType != "comment_added" {
+		t.Fatalf("expected chronological events, got %#v", view.Events)
+	}
+
 	if len(view.Dependencies.BlockedBy) != 1 || view.Dependencies.BlockedBy[0].SourceID != blocker.ID {
 		t.Fatalf("unexpected blockers: %#v", view.Dependencies.BlockedBy)
 	}
@@ -753,6 +761,35 @@ func TestIssueDetailViewIncludesCommentsDependenciesAndRelatedSummaries(t *testi
 
 	if view.LatestCloseReason != "" || view.LatestReopenReason != "" {
 		t.Fatalf("expected empty transition reasons for untouched issue, got close=%q reopen=%q", view.LatestCloseReason, view.LatestReopenReason)
+	}
+}
+
+func TestIssueDetailViewInitializesEmptyCollections(t *testing.T) {
+	ctx := testutil.Context(t)
+	repo := testutil.TempRepo(t)
+	s := testutil.InitStore(t, repo)
+
+	issue, err := s.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "issue",
+		Description: "body",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := s.IssueDetailView(ctx, issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if view.Comments == nil || view.Events == nil || view.Dependencies.BlockedBy == nil || view.Dependencies.Blocks == nil {
+		t.Fatalf("expected initialized detail-view slices, got %#v", view)
+	}
+
+	if len(view.Comments) != 0 || len(view.Events) != 1 || len(view.Dependencies.BlockedBy) != 0 || len(view.Dependencies.Blocks) != 0 {
+		t.Fatalf("unexpected detail-view collections: %#v", view)
 	}
 }
 

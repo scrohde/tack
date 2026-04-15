@@ -108,6 +108,7 @@ type IssueDetail struct {
 type IssueDetailView struct {
 	Issue              Issue                   `json:"issue"`
 	Comments           []Comment               `json:"comments"`
+	Events             []Event                 `json:"events"`
 	Dependencies       DependencyList          `json:"dependencies"`
 	RelatedSummaries   map[string]IssueSummary `json:"related_summaries"`
 	LatestCloseReason  string                  `json:"latest_close_reason,omitempty"`

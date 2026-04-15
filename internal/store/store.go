@@ -533,6 +533,7 @@ func (s *Store) IssueDetailView(ctx context.Context, id string) (issues.IssueDet
 	view := issues.IssueDetailView{
 		Issue:    issue,
 		Comments: []issues.Comment{},
+		Events:   []issues.Event{},
 		Dependencies: issues.DependencyList{
 			IssueID:   issue.ID,
 			BlockedBy: []issues.Link{},
@@ -558,6 +559,10 @@ func (s *Store) IssueDetailView(ctx context.Context, id string) (issues.IssueDet
 
 	if comments != nil {
 		view.Comments = comments
+	}
+
+	if events != nil {
+		view.Events = events
 	}
 
 	if deps.BlockedBy == nil {
