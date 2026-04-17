@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
@@ -557,33 +559,15 @@ func (m *model) renderDetailsTab(width int) string {
 	issue := m.detailView.Issue
 	lines := []string{
 		detailTitleStyle.Render(issue.Title),
-		metaLine("id", issue.ID),
-		metaLine("status", issue.Status),
-	}
-
-	if m.detailView.LatestCloseReason != "" {
-		lines = append(lines, metaLine("close reason", m.detailView.LatestCloseReason))
-	}
-
-	if m.detailView.LatestReopenReason != "" {
-		lines = append(lines, metaLine("reopen reason", m.detailView.LatestReopenReason))
-	}
-
-	lines = append(lines,
-		metaLine("type", issue.Type),
-		metaLine("priority", blankIfEmpty(issue.Priority)),
-		metaLine("assignee", blankIfEmpty(issue.Assignee)),
-		metaLine("labels", formatLabels(issue.Labels)),
 		"",
-		sectionTitleStyle.Render("Relationships"),
-		metaLine("parent", m.renderRelatedSummary(issue.ParentID)),
+		m.renderDetailSection(width, "Overview", buildOverviewFields(issue, m.detailView.LatestCloseReason, m.detailView.LatestReopenReason)),
 		"",
-		sectionTitleStyle.Render("Blocked By"),
-		m.renderRelatedLinks(m.detailView.Dependencies.BlockedBy, func(link issues.Link) string { return link.SourceID }),
-		"",
-		sectionTitleStyle.Render("Blocks"),
-		m.renderRelatedLinks(m.detailView.Dependencies.Blocks, func(link issues.Link) string { return link.TargetID }),
-	)
+		m.renderDetailSection(width, "Relationships", []detailField{
+			{label: "Parent", value: m.renderRelatedSummary(issue.ParentID)},
+			{label: "Blocked By", value: m.renderRelatedLinks(m.detailView.Dependencies.BlockedBy, func(link issues.Link) string { return link.SourceID })},
+			{label: "Blocks", value: m.renderRelatedLinks(m.detailView.Dependencies.Blocks, func(link issues.Link) string { return link.TargetID })},
+		}),
+	}
 
 	if strings.TrimSpace(issue.Description) != "" {
 		lines = append(lines, "", sectionTitleStyle.Render("Description"), m.renderMarkdown(issue.ID, width, issue.Description))
@@ -1683,6 +1667,124 @@ func metaLine(label, value string) string {
 	return fmt.Sprintf("%-9s %s", label, value)
 }
 
+type detailField struct {
+	label string
+	value string
+}
+
+func buildOverviewFields(issue issues.Issue, closeReason, reopenReason string) []detailField {
+	fields := []detailField{
+		{label: "ID", value: issue.ID},
+		{label: "Status", value: issue.Status},
+		{label: "Type", value: issue.Type},
+		{label: "Priority", value: blankIfEmpty(issue.Priority)},
+		{label: "Assignee", value: blankIfEmpty(issue.Assignee)},
+		{label: "Labels", value: formatLabels(issue.Labels)},
+	}
+
+	if closeReason != "" {
+		fields = append(fields, detailField{label: "Close Reason", value: closeReason})
+	}
+
+	if reopenReason != "" {
+		fields = append(fields, detailField{label: "Reopen Reason", value: reopenReason})
+	}
+
+	return fields
+}
+
+func (m *model) renderDetailSection(width int, title string, fields []detailField) string {
+	lines := []string{sectionTitleStyle.Render(title)}
+	labelWidth, valueWidth := detailColumnWidths(width, fields)
+
+	for _, field := range fields {
+		lines = append(lines, renderDetailField(field, labelWidth, valueWidth)...)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func detailColumnWidths(width int, fields []detailField) (int, int) {
+	labelWidth := 0
+	for _, field := range fields {
+		labelWidth = maxInt(labelWidth, lipgloss.Width(field.label))
+	}
+
+	labelWidth = clampInt(labelWidth, 8, 14)
+	valueWidth := maxInt(20, width-labelWidth-2)
+
+	return labelWidth, valueWidth
+}
+
+func renderDetailField(field detailField, labelWidth, valueWidth int) []string {
+	valueLines := strings.Split(wrapDetailValue(blankIfEmpty(field.value), valueWidth), "\n")
+	if len(valueLines) == 0 {
+		valueLines = []string{"(none)"}
+	}
+
+	label := detailKeyStyle.Width(labelWidth).Render(field.label)
+	indent := strings.Repeat(" ", labelWidth+2)
+	lines := []string{label + "  " + valueLines[0]}
+
+	for _, line := range valueLines[1:] {
+		lines = append(lines, indent+line)
+	}
+
+	return lines
+}
+
+func wrapDetailValue(value string, width int) string {
+	width = maxInt(8, width)
+
+	rawLines := strings.Split(strings.TrimSpace(value), "\n")
+	if len(rawLines) == 0 {
+		return ""
+	}
+
+	wrapped := make([]string, 0, len(rawLines))
+	for _, rawLine := range rawLines {
+		line := strings.TrimSpace(rawLine)
+		if line == "" {
+			wrapped = append(wrapped, "")
+			continue
+		}
+
+		for lipgloss.Width(line) > width {
+			cut := wrapIndex(line, width)
+			wrapped = append(wrapped, strings.TrimRightFunc(line[:cut], unicode.IsSpace))
+			line = strings.TrimLeftFunc(line[cut:], unicode.IsSpace)
+		}
+
+		wrapped = append(wrapped, line)
+	}
+
+	return strings.Join(wrapped, "\n")
+}
+
+func wrapIndex(value string, maxWidth int) int {
+	width := 0
+	lastSpace := -1
+
+	for idx, r := range value {
+		runeWidth := lipgloss.Width(string(r))
+		if width+runeWidth > maxWidth {
+			if lastSpace != -1 {
+				return lastSpace
+			}
+
+			return idx
+		}
+
+		width += runeWidth
+
+		if unicode.IsSpace(r) {
+			lastSpace = idx + utf8.RuneLen(r)
+		}
+	}
+
+	return len(value)
+}
+
 func sanitizeFilterForSource(source DataSource, filter store.ListFilter) store.ListFilter {
 	filter.Statuses = append([]string(nil), filter.Statuses...)
 	filter.Types = append([]string(nil), filter.Types...)
@@ -2150,6 +2252,7 @@ var (
 	paneTitleStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
 	tableHeaderStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Bold(true)
 	detailTitleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252"))
+	detailKeyStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("250"))
 	sectionTitleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 	mutedTextStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 )

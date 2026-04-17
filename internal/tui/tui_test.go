@@ -1081,11 +1081,15 @@ func TestDetailsAndActivityTabsRenderTypedDetailContext(t *testing.T) {
 		t.Fatalf("details tab did not render related context:\n%s", details)
 	}
 
-	if !strings.Contains(details, "close reason") || !strings.Contains(details, "done and verified") || !strings.Contains(details, "reopen reason") || !strings.Contains(details, "follow-up requested") {
-		t.Fatalf("details tab did not render transition reasons:\n%s", details)
+	plainDetails := ansiPattern.ReplaceAllString(details, "")
+	if !strings.Contains(plainDetails, "Overview") || !strings.Contains(plainDetails, "Relationships") {
+		t.Fatalf("details tab did not render sections cleanly:\n%s", plainDetails)
 	}
 
-	plainDetails := ansiPattern.ReplaceAllString(details, "")
+	if !strings.Contains(plainDetails, "Close Reason") || !strings.Contains(plainDetails, "done and verified") || !strings.Contains(plainDetails, "Reopen Reason") || !strings.Contains(plainDetails, "follow-up requested") {
+		t.Fatalf("details tab did not render transition reasons:\n%s", plainDetails)
+	}
+
 	if !strings.Contains(plainDetails, "Context") || !strings.Contains(plainDetails, "detail body") || strings.Contains(plainDetails, "# Context") {
 		t.Fatalf("details tab did not render markdown description cleanly:\n%s", plainDetails)
 	}
@@ -1454,8 +1458,74 @@ func TestDetailsTabOmitsEmptyTransitionReasons(t *testing.T) {
 	}
 
 	details := m.renderDetailsTab(72)
-	if strings.Contains(details, "close reason") || strings.Contains(details, "reopen reason") {
-		t.Fatalf("details tab should omit empty transition reason rows:\n%s", details)
+
+	plainDetails := ansiPattern.ReplaceAllString(details, "")
+	if strings.Contains(plainDetails, "Close Reason") || strings.Contains(plainDetails, "Reopen Reason") {
+		t.Fatalf("details tab should omit empty transition reason rows:\n%s", plainDetails)
+	}
+}
+
+func TestDetailsTabWrapsLongFieldValuesWithinAlignedColumns(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		allSummaries: []issues.IssueSummary{
+			{ID: "tk-1", Title: "target", Status: issues.StatusOpen, Type: issues.TypeTask},
+		},
+		details: map[string]issues.IssueDetailView{
+			"tk-1": {
+				Issue: issues.Issue{
+					ID:       "tk-1",
+					Title:    "target",
+					Status:   issues.StatusClosed,
+					Type:     issues.TypeTask,
+					Priority: "medium",
+					Labels:   []string{"plan:tui-browser-title-removal", "ui"},
+				},
+				Dependencies: issues.DependencyList{
+					IssueID:   "tk-1",
+					BlockedBy: []issues.Link{{SourceID: "tk-2"}, {SourceID: "tk-3"}},
+				},
+				RelatedSummaries: map[string]issues.IssueSummary{
+					"tk-2": {ID: "tk-2", Title: "first blocker", Status: issues.StatusBlocked},
+					"tk-3": {ID: "tk-3", Title: "second blocker", Status: issues.StatusOpen},
+				},
+				LatestCloseReason: "This close reason is deliberately long so it wraps and keeps the continuation lines aligned under the value column.",
+			},
+		},
+		project: issues.ProjectGraphView{
+			Issues: []issues.IssueSummary{{ID: "tk-1", Title: "target", Status: issues.StatusClosed}},
+		},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plainDetails := ansiPattern.ReplaceAllString(m.renderDetailsTab(46), "")
+	lines := strings.Split(plainDetails, "\n")
+
+	closeReasonLine := -1
+
+	for i, line := range lines {
+		if strings.Contains(line, "Close Reason") {
+			closeReasonLine = i
+			break
+		}
+	}
+
+	if closeReasonLine == -1 {
+		t.Fatalf("details tab did not render close reason row:\n%s", plainDetails)
+	}
+
+	labelWidth, _ := detailColumnWidths(46, buildOverviewFields(reader.details["tk-1"].Issue, reader.details["tk-1"].LatestCloseReason, reader.details["tk-1"].LatestReopenReason))
+	if closeReasonLine+1 >= len(lines) || !strings.HasPrefix(lines[closeReasonLine+1], strings.Repeat(" ", labelWidth+2)) {
+		t.Fatalf("wrapped close reason should align to the value column:\n%s", plainDetails)
+	}
+
+	if !strings.Contains(plainDetails, "Blocked By") || !strings.Contains(plainDetails, "tk-2  [blocked] first blocker") || !strings.Contains(plainDetails, "tk-3  [open] second blocker") {
+		t.Fatalf("details tab did not keep relationship rows readable:\n%s", plainDetails)
 	}
 }
 
