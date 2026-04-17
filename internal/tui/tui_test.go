@@ -690,6 +690,118 @@ func TestGuidedFilterPickerSupportsMultiSelect(t *testing.T) {
 	}
 }
 
+func TestGuidedLabelFilterPickerUsesMultiColumnLayoutWhenWide(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		allSummaries: []issues.IssueSummary{
+			{ID: "tk-1", Title: "issue", Status: issues.StatusOpen, Type: issues.TypeTask},
+		},
+		filterValuesByRequest: func(source store.FilterValueSource, key store.FilterValueKey, filter store.ListFilter) []string {
+			if key != store.FilterValueKeyLabel {
+				t.Fatalf("unexpected key: %q", key)
+			}
+
+			return []string{"label-01", "label-02", "label-03", "label-04", "label-05", "label-06"}
+		},
+		details: map[string]issues.IssueDetailView{
+			"tk-1": {Issue: issues.Issue{ID: "tk-1", Title: "issue", Status: issues.StatusOpen}},
+		},
+		project: issues.ProjectGraphView{
+			Issues: []issues.IssueSummary{{ID: "tk-1", Title: "issue", Status: issues.StatusOpen}},
+		},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.width = 64
+	m.height = 16
+	m.handleKey("/")
+	m.handleKey("down")
+	m.handleKey("down")
+	m.handleKey("enter")
+
+	layout := m.currentFilterPickerValueLayout()
+	if !layout.multiColumn || layout.columns != 3 || layout.rows != 2 {
+		t.Fatalf("expected a 3x2 multi-column layout, got %#v", layout)
+	}
+
+	rendered := ansiPattern.ReplaceAllString(m.render(), "")
+	foundRow := false
+
+	for _, line := range strings.Split(rendered, "\n") {
+		if strings.Contains(line, "label-01") && strings.Contains(line, "label-03") && strings.Contains(line, "label-05") {
+			foundRow = true
+			break
+		}
+	}
+
+	if !foundRow {
+		t.Fatalf("expected multi-column row in rendered picker, got:\n%s", rendered)
+	}
+}
+
+func TestGuidedLabelFilterPickerLeftRightMovesBetweenColumns(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeReader{
+		allSummaries: []issues.IssueSummary{
+			{ID: "tk-1", Title: "issue", Status: issues.StatusOpen, Type: issues.TypeTask},
+		},
+		filterValuesByRequest: func(source store.FilterValueSource, key store.FilterValueKey, filter store.ListFilter) []string {
+			if key != store.FilterValueKeyLabel {
+				t.Fatalf("unexpected key: %q", key)
+			}
+
+			return []string{"label-01", "label-02", "label-03", "label-04", "label-05", "label-06"}
+		},
+		details: map[string]issues.IssueDetailView{
+			"tk-1": {Issue: issues.Issue{ID: "tk-1", Title: "issue", Status: issues.StatusOpen}},
+		},
+		project: issues.ProjectGraphView{
+			Issues: []issues.IssueSummary{{ID: "tk-1", Title: "issue", Status: issues.StatusOpen}},
+		},
+	}
+
+	m, err := newModel(context.Background(), "/repo", reader, StartupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.width = 64
+	m.height = 16
+	m.handleKey("/")
+	m.handleKey("down")
+	m.handleKey("down")
+	m.handleKey("enter")
+
+	layout := m.currentFilterPickerValueLayout()
+	if !layout.multiColumn {
+		t.Fatalf("expected multi-column label layout, got %#v", layout)
+	}
+
+	m.handleKey("right")
+
+	if m.filterPicker.valueIndex != layout.rows {
+		t.Fatalf("expected right arrow to move to the next column, got index %d with layout %#v", m.filterPicker.valueIndex, layout)
+	}
+
+	m.handleKey("right")
+
+	if m.filterPicker.valueIndex != layout.rows*2 {
+		t.Fatalf("expected another right arrow to move again, got index %d with layout %#v", m.filterPicker.valueIndex, layout)
+	}
+
+	m.handleKey("left")
+
+	if m.filterPicker.valueIndex != layout.rows {
+		t.Fatalf("expected left arrow to move back a column, got index %d with layout %#v", m.filterPicker.valueIndex, layout)
+	}
+}
+
 func TestGuidedFilterPickerScrollsLongValueLists(t *testing.T) {
 	t.Parallel()
 
@@ -741,10 +853,6 @@ func TestGuidedFilterPickerScrollsLongValueLists(t *testing.T) {
 
 	if !strings.Contains(rendered, "> [ ] label-10") {
 		t.Fatalf("expected the selected off-screen value to remain visible, got:\n%s", rendered)
-	}
-
-	if strings.Contains(rendered, "label-01") {
-		t.Fatalf("expected early values to scroll out of view once the selection moved down, got:\n%s", rendered)
 	}
 }
 

@@ -103,6 +103,16 @@ type filterPickerState struct {
 	limitInput string
 }
 
+type filterPickerValueLayout struct {
+	columns     int
+	rows        int
+	startRow    int
+	endRow      int
+	cellWidth   int
+	columnGap   int
+	multiColumn bool
+}
+
 type model struct {
 	ctx      context.Context
 	repoRoot string
@@ -320,10 +330,14 @@ func (m *model) render() string {
 		staticHeight += lipgloss.Height(help)
 	}
 
-	bodyHeight := maxInt(1, m.height-staticHeight)
+	bodyHeight := maxInt(0, m.height-staticHeight)
 
 	if m.width < 60 || m.height < 12 || bodyHeight < 8 {
-		parts = append(parts, m.renderCompactLayout(bodyHeight), footer)
+		if compact := m.renderCompactLayout(bodyHeight); compact != "" {
+			parts = append(parts, compact)
+		}
+
+		parts = append(parts, footer)
 
 		if help != "" {
 			parts = append(parts, help)
@@ -348,7 +362,12 @@ func (m *model) render() string {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	}
 
-	rendered := append(parts, body, footer)
+	rendered := append([]string{}, parts...)
+	if body != "" {
+		rendered = append(rendered, body)
+	}
+
+	rendered = append(rendered, footer)
 
 	if help != "" {
 		rendered = append(rendered, help)
@@ -369,6 +388,10 @@ func (m *model) maxFilterPickerHeight(header, footer, help string) int {
 }
 
 func (m *model) renderCompactLayout(height int) string {
+	if height <= 0 {
+		return ""
+	}
+
 	warning := compactWarningStyle.Render(fmt.Sprintf("Compact single-column layout (%dx%d). Full layout needs about 60x12.", m.width, m.height))
 	width := maxInt(24, m.width-2)
 
@@ -465,6 +488,7 @@ func (m *model) renderExpandedHelp() string {
 		"j/k and up/down move the issue selection",
 		"/ opens guided filters; choose status, type, label, assignee, limit, or reset",
 		"In value pickers, space toggles the highlighted value and enter applies the selection",
+		"In wide label pickers, left/right moves between visible columns",
 		"In the limit prompt, type digits and press enter; an empty value clears the limit",
 		"enter pins the selected issue in the detail pane",
 		"esc returns focus to the browser and clears the current pin",
@@ -1199,6 +1223,7 @@ func (m *model) openFilterValuePicker(key filterPickerKey) error {
 
 func (m *model) handleFilterPickerValues(key string) tea.Cmd {
 	values := m.filterPicker.values
+	layout := m.currentFilterPickerValueLayout()
 
 	switch key {
 	case "esc":
@@ -1214,6 +1239,14 @@ func (m *model) handleFilterPickerValues(key string) tea.Cmd {
 	case "down", "j":
 		if len(values) > 0 {
 			m.filterPicker.valueIndex = clampInt(m.filterPicker.valueIndex+1, 0, len(values)-1)
+		}
+	case "left":
+		if layout.multiColumn {
+			m.filterPicker.valueIndex = moveFilterPickerValueByColumn(layout, len(values), m.filterPicker.valueIndex, -1)
+		}
+	case "right":
+		if layout.multiColumn {
+			m.filterPicker.valueIndex = moveFilterPickerValueByColumn(layout, len(values), m.filterPicker.valueIndex, 1)
 		}
 	case "space":
 		if len(values) == 0 {
@@ -1319,9 +1352,16 @@ func (m *model) renderFilterPicker(maxHeight int) string {
 
 	switch m.filterPicker.mode {
 	case filterPickerValues:
+		layout := m.filterPickerValueLayout(maxHeight)
+
+		controls := "space toggles  enter applies  esc back"
+		if layout.multiColumn {
+			controls = "space toggles  enter applies  left/right move columns  esc back"
+		}
+
 		lines = append(lines,
 			"Editing: "+string(m.filterPicker.key),
-			"space toggles  enter applies  esc back",
+			controls,
 		)
 
 		if len(m.filterPicker.values) == 0 {
@@ -1329,21 +1369,30 @@ func (m *model) renderFilterPicker(maxHeight int) string {
 			return strings.Join(lines, "\n")
 		}
 
+		if layout.multiColumn {
+			for row := layout.startRow; row < layout.endRow; row++ {
+				parts := make([]string, 0, layout.columns)
+
+				for column := 0; column < layout.columns; column++ {
+					index, ok := filterPickerGridIndex(layout, len(m.filterPicker.values), column, row)
+					if !ok {
+						parts = append(parts, strings.Repeat(" ", layout.cellWidth))
+						continue
+					}
+
+					cell := renderFilterPickerValueCell(m.filterPicker.values, m.filterPicker.selected, index, m.filterPicker.valueIndex)
+					parts = append(parts, fmt.Sprintf("%-*s", layout.cellWidth, cell))
+				}
+
+				lines = append(lines, strings.TrimRight(strings.Join(parts, strings.Repeat(" ", layout.columnGap)), " "))
+			}
+
+			break
+		}
+
 		start, end := listViewportWindow(len(m.filterPicker.values), m.filterPicker.valueIndex, maxInt(1, contentHeight-len(lines)))
 		for i := start; i < end; i++ {
-			value := m.filterPicker.values[i]
-
-			marker := "  "
-			if i == clampInt(m.filterPicker.valueIndex, 0, len(m.filterPicker.values)-1) {
-				marker = "> "
-			}
-
-			check := "[ ]"
-			if _, ok := m.filterPicker.selected[value]; ok {
-				check = "[x]"
-			}
-
-			lines = append(lines, fmt.Sprintf("%s%s %s", marker, check, value))
+			lines = append(lines, renderFilterPickerValueCell(m.filterPicker.values, m.filterPicker.selected, i, m.filterPicker.valueIndex))
 		}
 	case filterPickerLimit:
 		lines = append(lines,
@@ -1708,6 +1757,115 @@ func (m *model) renderFilterPickerKeySummary(key filterPickerKey) string {
 	}
 }
 
+func (m *model) currentFilterPickerValueLayout() filterPickerValueLayout {
+	header := headerStyle.Render(m.renderHeader())
+	footer := footerStyle.Render(m.renderFooter())
+
+	help := ""
+	if m.showHelp {
+		help = helpStyle.Render(m.renderExpandedHelp())
+	}
+
+	return m.filterPickerValueLayout(m.maxFilterPickerHeight(header, footer, help))
+}
+
+func (m *model) filterPickerValueLayout(maxHeight int) filterPickerValueLayout {
+	layout := filterPickerValueLayout{
+		columns:   1,
+		rows:      len(m.filterPicker.values),
+		startRow:  0,
+		endRow:    len(m.filterPicker.values),
+		cellWidth: filterPickerValueCellWidth(m.filterPicker.values),
+		columnGap: 2,
+	}
+
+	if m.filterPicker.key != filterPickerKeyLabel || len(m.filterPicker.values) == 0 {
+		return layout
+	}
+
+	contentHeight := maxInt(1, maxHeight-filterStyle.GetVerticalFrameSize())
+	visibleRows := maxInt(1, contentHeight-4)
+	contentWidth := maxInt(20, m.width-filterStyle.GetHorizontalFrameSize()-2)
+
+	maxColumns := maxInt(1, (contentWidth+layout.columnGap)/(layout.cellWidth+layout.columnGap))
+	if maxColumns < 2 {
+		layout.endRow = minInt(layout.rows, visibleRows)
+		return layout
+	}
+
+	layout.columns = minInt(maxColumns, len(m.filterPicker.values))
+	layout.rows = (len(m.filterPicker.values) + layout.columns - 1) / layout.columns
+	layout.multiColumn = true
+
+	selected := clampInt(m.filterPicker.valueIndex, 0, len(m.filterPicker.values)-1)
+	selectedRow := selected % layout.rows
+	layout.startRow, layout.endRow = listViewportWindow(layout.rows, selectedRow, visibleRows)
+
+	return layout
+}
+
+func filterPickerValueCellWidth(values []string) int {
+	width := lipgloss.Width("> [x] ")
+	for _, value := range values {
+		width = maxInt(width, lipgloss.Width("> [x] ")+lipgloss.Width(value))
+	}
+
+	return width
+}
+
+func renderFilterPickerValueCell(values []string, selected map[string]struct{}, index, activeIndex int) string {
+	value := values[index]
+
+	marker := "  "
+	if index == clampInt(activeIndex, 0, len(values)-1) {
+		marker = "> "
+	}
+
+	check := "[ ]"
+	if _, ok := selected[value]; ok {
+		check = "[x]"
+	}
+
+	return fmt.Sprintf("%s%s %s", marker, check, value)
+}
+
+func moveFilterPickerValueByColumn(layout filterPickerValueLayout, total, current, delta int) int {
+	if !layout.multiColumn || total == 0 || delta == 0 {
+		return clampInt(current, 0, maxInt(0, total-1))
+	}
+
+	current = clampInt(current, 0, total-1)
+	row := current % layout.rows
+	column := current / layout.rows
+
+	targetColumn := clampInt(column+delta, 0, layout.columns-1)
+	if targetColumn == column {
+		return current
+	}
+
+	start := targetColumn * layout.rows
+
+	length := minInt(layout.rows, total-start)
+	if length <= 0 {
+		return current
+	}
+
+	return start + clampInt(row, 0, length-1)
+}
+
+func filterPickerGridIndex(layout filterPickerValueLayout, total, column, row int) (int, bool) {
+	if !layout.multiColumn || column < 0 || column >= layout.columns || row < 0 || row >= layout.rows {
+		return 0, false
+	}
+
+	index := column*layout.rows + row
+	if index < 0 || index >= total {
+		return 0, false
+	}
+
+	return index, true
+}
+
 func renderFilterValuesSummary(values []string) string {
 	if len(values) == 0 {
 		return "(none)"
@@ -1920,6 +2078,14 @@ func clampInt(value, low, high int) int {
 
 func maxInt(a, b int) int {
 	if a > b {
+		return a
+	}
+
+	return b
+}
+
+func minInt(a, b int) int {
+	if a < b {
 		return a
 	}
 
