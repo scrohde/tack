@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -1162,6 +1163,90 @@ func TestImportPlaintextOutput(t *testing.T) {
 	}
 }
 
+func TestImportAcceptsExportSnapshot(t *testing.T) {
+	sourceRepo := testutil.TempRepo(t)
+	testutil.Chdir(t, sourceRepo)
+	t.Setenv("TACK_ACTOR", "alice")
+
+	runCLI(t, sourceRepo, "init")
+
+	parent := createIssue(t, sourceRepo, []string{
+		"create",
+		"--title", "Parent epic",
+		"--type", "epic",
+		"--priority", "high",
+		"--description", "parent",
+		"--label", "plan",
+		"--json",
+	})
+	blocker := createIssue(t, sourceRepo, []string{
+		"create",
+		"--title", "Blocking bug",
+		"--type", "bug",
+		"--priority", "urgent",
+		"--description", "blocker",
+		"--json",
+	})
+	child := createIssue(t, sourceRepo, []string{
+		"create",
+		"--title", "Child task",
+		"--type", "task",
+		"--priority", "medium",
+		"--description", "child",
+		"--parent", stringField(t, parent, "id"),
+		"--depends-on", stringField(t, blocker, "id"),
+		"--label", "backend",
+		"--json",
+	})
+
+	runJSON[map[string]any](t, sourceRepo, "update", stringField(t, child, "id"), "--claim", "--json")
+	runCLI(t, sourceRepo, "comment", "add", stringField(t, child, "id"), "--body", "note")
+	runCLI(t, sourceRepo, "labels", "add", stringField(t, child, "id"), "urgent")
+	runJSON[map[string]any](t, sourceRepo, "close", stringField(t, blocker, "id"), "--reason", "fixed", "--json")
+
+	exportedBytes, err := runCLIBytes(sourceRepo, "export", "--json")
+	if err != nil {
+		t.Fatalf("export failed: %v", err)
+	}
+
+	exportPath := writeManifest(t, sourceRepo, string(exportedBytes))
+
+	var exported map[string]any
+
+	err = json.Unmarshal(exportedBytes, &exported)
+	if err != nil {
+		t.Fatalf("unmarshal export output: %v", err)
+	}
+
+	targetRepo := testutil.TempRepo(t)
+	testutil.Chdir(t, targetRepo)
+
+	runCLI(t, targetRepo, "init")
+
+	result := runJSON[map[string]any](t, targetRepo, "import", "--file", exportPath, "--json")
+
+	createdIDs := anyStrings(t, result["created_ids"])
+	if len(createdIDs) != 3 {
+		t.Fatalf("expected 3 created ids from snapshot import, got %#v", result)
+	}
+
+	roundTripped := runJSON[map[string]any](t, targetRepo, "export", "--json")
+
+	metadata, ok := roundTripped["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected metadata object, got %#v", roundTripped["metadata"])
+	}
+
+	sourceMetadata, ok := exported["metadata"].(map[string]any)
+	if !ok || metadata["source_db_path"] != sourceMetadata["db_path"] {
+		t.Fatalf("expected source_db_path to preserve original export path, got %#v", roundTripped["metadata"])
+	}
+
+	if !reflect.DeepEqual(exportJSONWithoutDBPath(roundTripped), exportJSONWithoutDBPath(exported)) {
+		t.Fatalf("snapshot CLI round-trip mismatch:\nwant: %#v\ngot:  %#v", exportJSONWithoutDBPath(exported), exportJSONWithoutDBPath(roundTripped))
+	}
+}
+
 func TestShowJSONIncludesRelatedData(t *testing.T) {
 	repo := testutil.TempRepo(t)
 	testutil.Chdir(t, repo)
@@ -1422,6 +1507,35 @@ func writeManifest(t *testing.T, repo, body string) string {
 	}
 
 	return path
+}
+
+func exportJSONWithoutDBPath(data map[string]any) map[string]any {
+	out := make(map[string]any, len(data))
+	for key, value := range data {
+		if key != "metadata" {
+			out[key] = value
+			continue
+		}
+
+		metadata, ok := value.(map[string]any)
+		if !ok {
+			out[key] = value
+			continue
+		}
+
+		filtered := make(map[string]any, len(metadata))
+		for metaKey, metaValue := range metadata {
+			if metaKey == "db_path" || metaKey == "source_db_path" {
+				continue
+			}
+
+			filtered[metaKey] = metaValue
+		}
+
+		out[key] = filtered
+	}
+
+	return out
 }
 
 func assertInstallJSON(t *testing.T, data map[string]any, mode, skillsRoot, skillDir, skillPath string) {

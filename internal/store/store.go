@@ -1558,6 +1558,10 @@ func (s *Store) Export(ctx context.Context) (issues.Export, error) {
 		meta[key] = value
 	}
 
+	if originalPath, ok := meta["db_path"].(string); ok && strings.TrimSpace(originalPath) != "" && originalPath != s.path {
+		meta["source_db_path"] = originalPath
+	}
+
 	meta["db_path"] = s.path
 
 	return issues.Export{
@@ -1651,6 +1655,120 @@ func (s *Store) ImportIssues(ctx context.Context, manifest ImportManifest, actor
 			"depends_on": blockerIDs,
 			"labels":     entry.Labels,
 		})
+		if err != nil {
+			return ImportResult{}, err
+		}
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return ImportResult{}, err
+	}
+
+	return ImportResult{AliasMap: aliasMap, CreatedIDs: createdIDs}, nil
+}
+
+func (s *Store) ImportSnapshot(ctx context.Context, data issues.Export) (ImportResult, error) {
+	metadata, err := normalizeImportMetadata(data.Metadata)
+	if err != nil {
+		return ImportResult{}, err
+	}
+
+	err = validateImportSnapshot(data)
+	if err != nil {
+		return ImportResult{}, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ImportResult{}, err
+	}
+	defer rollbackTx(tx)
+
+	empty, err := isIssueStoreEmptyTx(ctx, tx)
+	if err != nil {
+		return ImportResult{}, err
+	}
+
+	if !empty {
+		return ImportResult{}, errors.New("snapshot import requires an empty issue store")
+	}
+
+	_, err = tx.ExecContext(ctx, `DELETE FROM issue_metadata`)
+	if err != nil {
+		return ImportResult{}, err
+	}
+
+	createdIDs := make([]string, 0, len(data.Issues))
+	aliasMap := make(map[string]string, len(data.Issues))
+
+	for _, issue := range data.Issues {
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO issues (
+				id, sequence, title, description, type, status, priority, assignee,
+				created_at, updated_at, closed_at, parent_id
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+		`, issue.ID, issue.Sequence, issue.Title, issue.Description, issue.Type, issue.Status, issue.Priority,
+			nullableString(issue.Assignee), issue.CreatedAt.UTC().Format(time.RFC3339Nano),
+			issue.UpdatedAt.UTC().Format(time.RFC3339Nano), nullableTime(issue.ClosedAt))
+		if err != nil {
+			return ImportResult{}, err
+		}
+
+		err = addLabelsTx(ctx, tx, issue.ID, issues.NormalizeLabels(issue.Labels), issue.CreatedAt.UTC())
+		if err != nil {
+			return ImportResult{}, err
+		}
+
+		createdIDs = append(createdIDs, issue.ID)
+		aliasMap[issue.ID] = issue.ID
+	}
+
+	for _, issue := range data.Issues {
+		parentID := strings.TrimSpace(issue.ParentID)
+		if parentID == "" {
+			continue
+		}
+
+		_, err = tx.ExecContext(ctx, `UPDATE issues SET parent_id = ? WHERE id = ?`, parentID, issue.ID)
+		if err != nil {
+			return ImportResult{}, err
+		}
+	}
+
+	for _, link := range data.Links {
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO issue_links(id, source_id, target_id, kind, created_at)
+			VALUES (?, ?, ?, ?, ?)
+		`, link.ID, link.SourceID, link.TargetID, link.Kind, link.CreatedAt.UTC().Format(time.RFC3339Nano))
+		if err != nil {
+			return ImportResult{}, err
+		}
+	}
+
+	for _, comment := range data.Comments {
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO issue_comments(id, issue_id, body, author, created_at)
+			VALUES (?, ?, ?, ?, ?)
+		`, comment.ID, comment.IssueID, comment.Body, comment.Author, comment.CreatedAt.UTC().Format(time.RFC3339Nano))
+		if err != nil {
+			return ImportResult{}, err
+		}
+	}
+
+	for _, event := range data.Events {
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO issue_events(id, issue_id, actor, event_type, payload_json, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, event.ID, nullableString(event.IssueID), event.Actor, event.EventType, event.Payload,
+			event.CreatedAt.UTC().Format(time.RFC3339Nano))
+		if err != nil {
+			return ImportResult{}, err
+		}
+	}
+
+	for _, key := range sortedMetadataKeys(metadata) {
+		_, err = tx.ExecContext(ctx, `INSERT INTO issue_metadata(key, value) VALUES (?, ?)`, key, metadata[key])
 		if err != nil {
 			return ImportResult{}, err
 		}
@@ -2407,6 +2525,51 @@ func closeRows(rows *sql.Rows) {
 	}
 }
 
+func isIssueStoreEmptyTx(ctx context.Context, tx *sql.Tx) (bool, error) {
+	var count int
+
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM issues`).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+
+	return count == 0, nil
+}
+
+func normalizeImportMetadata(metadata map[string]any) (map[string]string, error) {
+	if len(metadata) == 0 {
+		return map[string]string{}, nil
+	}
+
+	out := make(map[string]string, len(metadata))
+	for key, value := range metadata {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return nil, errors.New("metadata key cannot be empty")
+		}
+
+		text, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("metadata %q must be a string", key)
+		}
+
+		out[key] = text
+	}
+
+	return out, nil
+}
+
+func sortedMetadataKeys(metadata map[string]string) []string {
+	keys := make([]string, 0, len(metadata))
+	for key := range metadata {
+		keys = append(keys, key)
+	}
+
+	slices.Sort(keys)
+
+	return keys
+}
+
 type normalizedImportIssue struct {
 	DependsOn   []string
 	Labels      []string
@@ -2502,6 +2665,131 @@ func normalizeImportManifest(manifest ImportManifest) ([]normalizedImportIssue, 
 	}
 
 	return out, nil
+}
+
+func validateImportSnapshot(data issues.Export) error {
+	if len(data.IssueData) > 0 {
+		return errors.New("snapshot issue_data import is not supported")
+	}
+
+	issueIDs := make(map[string]struct{}, len(data.Issues))
+	sequences := make(map[int64]struct{}, len(data.Issues))
+	parentGraph := make([]normalizedImportIssue, 0, len(data.Issues))
+
+	for i, issue := range data.Issues {
+		id := strings.TrimSpace(issue.ID)
+		if id == "" {
+			return fmt.Errorf("snapshot issue %d: id is required", i+1)
+		}
+
+		if _, ok := issueIDs[id]; ok {
+			return fmt.Errorf("duplicate snapshot issue id %q", id)
+		}
+
+		if issue.Sequence <= 0 {
+			return fmt.Errorf("issue %q: sequence must be positive", id)
+		}
+
+		if _, ok := sequences[issue.Sequence]; ok {
+			return fmt.Errorf("duplicate snapshot issue sequence %d", issue.Sequence)
+		}
+
+		if strings.TrimSpace(issue.Title) == "" {
+			return fmt.Errorf("issue %q: title is required", id)
+		}
+
+		if !issues.IsValidType(issue.Type) {
+			return fmt.Errorf("issue %q: invalid type %q", id, issue.Type)
+		}
+
+		if !issues.IsValidStatus(issue.Status) {
+			return fmt.Errorf("issue %q: invalid status %q", id, issue.Status)
+		}
+
+		if !issues.IsValidPriority(issue.Priority) {
+			return fmt.Errorf("issue %q: invalid priority %q", id, issue.Priority)
+		}
+
+		parentID := strings.TrimSpace(issue.ParentID)
+		if parentID == id {
+			return fmt.Errorf("issue %q cannot be its own parent", id)
+		}
+
+		issueIDs[id] = struct{}{}
+		sequences[issue.Sequence] = struct{}{}
+
+		parentGraph = append(parentGraph, normalizedImportIssue{
+			Alias:       id,
+			ParentAlias: parentID,
+		})
+	}
+
+	for _, issue := range data.Issues {
+		parentID := strings.TrimSpace(issue.ParentID)
+		if parentID == "" {
+			continue
+		}
+
+		if _, ok := issueIDs[parentID]; !ok {
+			return fmt.Errorf("issue %q references unknown parent %q", issue.ID, parentID)
+		}
+	}
+
+	err := validateImportParentGraph(parentGraph)
+	if err != nil {
+		return err
+	}
+
+	linkIDs := make(map[int64]struct{}, len(data.Links))
+	for _, link := range data.Links {
+		if _, ok := linkIDs[link.ID]; ok {
+			return fmt.Errorf("duplicate snapshot link id %d", link.ID)
+		}
+
+		if _, ok := issueIDs[link.SourceID]; !ok {
+			return fmt.Errorf("link %d references unknown source issue %q", link.ID, link.SourceID)
+		}
+
+		if _, ok := issueIDs[link.TargetID]; !ok {
+			return fmt.Errorf("link %d references unknown target issue %q", link.ID, link.TargetID)
+		}
+
+		linkIDs[link.ID] = struct{}{}
+	}
+
+	commentIDs := make(map[int64]struct{}, len(data.Comments))
+	for _, comment := range data.Comments {
+		if _, ok := commentIDs[comment.ID]; ok {
+			return fmt.Errorf("duplicate snapshot comment id %d", comment.ID)
+		}
+
+		if _, ok := issueIDs[comment.IssueID]; !ok {
+			return fmt.Errorf("comment %d references unknown issue %q", comment.ID, comment.IssueID)
+		}
+
+		commentIDs[comment.ID] = struct{}{}
+	}
+
+	eventIDs := make(map[int64]struct{}, len(data.Events))
+	for _, event := range data.Events {
+		if _, ok := eventIDs[event.ID]; ok {
+			return fmt.Errorf("duplicate snapshot event id %d", event.ID)
+		}
+
+		if issueID := strings.TrimSpace(event.IssueID); issueID != "" {
+			if _, ok := issueIDs[issueID]; !ok {
+				return fmt.Errorf("event %d references unknown issue %q", event.ID, issueID)
+			}
+		}
+
+		if strings.TrimSpace(event.Payload) != "" && !json.Valid([]byte(event.Payload)) {
+			return fmt.Errorf("event %d has invalid payload JSON", event.ID)
+		}
+
+		eventIDs[event.ID] = struct{}{}
+	}
+
+	return nil
 }
 
 func validateImportParentGraph(issues []normalizedImportIssue) error {

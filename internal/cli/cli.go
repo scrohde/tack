@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -50,6 +51,19 @@ const (
 )
 
 var launchTUI = tui.Run
+
+type importFileKind string
+
+const (
+	importFileKindManifest importFileKind = "manifest"
+	importFileKindSnapshot importFileKind = "snapshot"
+)
+
+type importFile struct {
+	kind     importFileKind
+	manifest store.ImportManifest
+	snapshot issues.Export
+}
 
 func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	app := &App{stdout: stdout, stderr: stderr}
@@ -336,7 +350,7 @@ func (a *App) runImport(ctx context.Context, args []string) error {
 		return errors.New("--file is required")
 	}
 
-	manifest, err := readImportManifest(*filePath)
+	input, err := readImportFile(*filePath)
 	if err != nil {
 		return err
 	}
@@ -347,21 +361,31 @@ func (a *App) runImport(ctx context.Context, args []string) error {
 	}
 	defer closeStore(s)
 
-	actor, err := resolveActor(repoRoot, actorFlag)
-	if err != nil {
-		return err
-	}
+	var result store.ImportResult
 
-	result, err := s.ImportIssues(ctx, manifest, actor)
-	if err != nil {
-		return err
+	switch input.kind {
+	case importFileKindSnapshot:
+		result, err = s.ImportSnapshot(ctx, input.snapshot)
+		if err != nil {
+			return err
+		}
+	default:
+		actor, err := resolveActor(repoRoot, actorFlag)
+		if err != nil {
+			return err
+		}
+
+		result, err = s.ImportIssues(ctx, input.manifest, actor)
+		if err != nil {
+			return err
+		}
 	}
 
 	if *jsonOut {
 		return writeJSON(a.stdout, result)
 	}
 
-	return printImportSummary(a.stdout, manifest, result)
+	return printImportSummary(a.stdout, input, result)
 }
 
 func (a *App) runShow(ctx context.Context, args []string) error {
@@ -1362,13 +1386,28 @@ func printIssueTable(w io.Writer, all []issues.Issue) error {
 	return tw.Flush()
 }
 
-func printImportSummary(w io.Writer, manifest store.ImportManifest, result store.ImportResult) error {
+func printImportSummary(w io.Writer, input importFile, result store.ImportResult) error {
 	_, err := fmt.Fprintf(w, "imported %d issues\n", len(result.CreatedIDs))
 	if err != nil {
 		return err
 	}
 
-	for _, issue := range manifest.Issues {
+	if input.kind == importFileKindSnapshot {
+		_, err = fmt.Fprintf(
+			w,
+			"restored %d links, %d comments, %d events\n",
+			len(input.snapshot.Links),
+			len(input.snapshot.Comments),
+			len(input.snapshot.Events),
+		)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	}
+
+	for _, issue := range input.manifest.Issues {
 		alias := strings.TrimSpace(issue.ID)
 		if alias == "" {
 			continue
@@ -1563,12 +1602,12 @@ func printFlagDefaults(out io.Writer, fs *flag.FlagSet) error {
 	return nil
 }
 
-func readImportManifest(path string) (_ store.ImportManifest, err error) {
-	var manifest store.ImportManifest
+func readImportFile(path string) (_ importFile, err error) {
+	var input importFile
 
 	file, err := os.Open(path)
 	if err != nil {
-		return manifest, err
+		return input, err
 	}
 
 	defer func() {
@@ -1578,24 +1617,88 @@ func readImportManifest(path string) (_ store.ImportManifest, err error) {
 		}
 	}()
 
-	dec := json.NewDecoder(file)
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return input, err
+	}
+
+	kind, err := detectImportFileKind(data)
+	if err != nil {
+		return input, err
+	}
+
+	switch kind {
+	case importFileKindSnapshot:
+		err = decodeStrictJSON(data, &input.snapshot)
+	default:
+		err = decodeStrictJSON(data, &input.manifest)
+	}
+
+	if err != nil {
+		return importFile{}, err
+	}
+
+	input.kind = kind
+
+	return input, nil
+}
+
+func detectImportFileKind(data []byte) (importFileKind, error) {
+	var raw map[string]json.RawMessage
+
+	err := decodeStrictJSON(data, &raw)
+	if err != nil {
+		return "", err
+	}
+
+	for _, key := range []string{"metadata", "issue_data", "links", "comments", "events"} {
+		if _, ok := raw[key]; ok {
+			return importFileKindSnapshot, nil
+		}
+	}
+
+	issuesRaw, ok := raw["issues"]
+	if !ok {
+		return importFileKindManifest, nil
+	}
+
+	var issueEntries []map[string]json.RawMessage
+
+	err = json.Unmarshal(issuesRaw, &issueEntries)
+	if err != nil {
+		return importFileKindManifest, nil
+	}
+
+	for _, issue := range issueEntries {
+		for _, key := range []string{"sequence", "status", "assignee", "created_at", "updated_at", "closed_at", "parent_id"} {
+			if _, ok := issue[key]; ok {
+				return importFileKindSnapshot, nil
+			}
+		}
+	}
+
+	return importFileKindManifest, nil
+}
+
+func decodeStrictJSON(data []byte, target any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 
-	err = dec.Decode(&manifest)
+	err := dec.Decode(target)
 	if err != nil {
-		return store.ImportManifest{}, err
+		return err
 	}
 
 	err = dec.Decode(&struct{}{})
 	if !errors.Is(err, io.EOF) {
 		if err == nil {
-			return store.ImportManifest{}, errors.New("manifest must contain a single JSON value")
+			return errors.New("manifest must contain a single JSON value")
 		}
 
-		return store.ImportManifest{}, err
+		return err
 	}
 
-	return manifest, nil
+	return nil
 }
 
 func isHelpToken(arg string) bool {

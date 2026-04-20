@@ -1732,6 +1732,100 @@ func TestImportIssuesRollsBackOnInvalidGraph(t *testing.T) {
 	}
 }
 
+func TestImportSnapshotRoundTripsExport(t *testing.T) {
+	ctx := testutil.Context(t)
+	sourceRepo := testutil.TempRepo(t)
+	source := testutil.InitStore(t, sourceRepo)
+
+	parent, err := source.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "Parent epic",
+		Description: "parent",
+		Type:        issues.TypeEpic,
+		Priority:    "high",
+		Labels:      []string{"plan"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blocker, err := source.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "Blocking bug",
+		Description: "blocker",
+		Type:        issues.TypeBug,
+		Priority:    "urgent",
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	child, err := source.CreateIssue(ctx, store.CreateIssueInput{
+		Title:       "Imported child",
+		Description: "child",
+		Type:        issues.TypeTask,
+		Priority:    "medium",
+		ParentID:    parent.ID,
+		DependsOn:   []string{blocker.ID},
+		Labels:      []string{"backend"},
+	}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = source.UpdateIssue(ctx, child.ID, store.UpdateIssueInput{Claim: true}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = source.AddComment(ctx, child.ID, "note", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = source.AddLabels(ctx, child.ID, []string{"urgent"}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = source.CloseIssue(ctx, blocker.ID, "fixed", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exported, err := source.Export(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	targetRepo := testutil.TempRepo(t)
+	target := testutil.InitStore(t, targetRepo)
+
+	result, err := target.ImportSnapshot(ctx, exported)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.CreatedIDs) != len(exported.Issues) {
+		t.Fatalf("expected %d created ids, got %#v", len(exported.Issues), result.CreatedIDs)
+	}
+
+	if result.AliasMap[child.ID] != child.ID {
+		t.Fatalf("expected identity alias map for snapshot import, got %#v", result.AliasMap)
+	}
+
+	roundTripped, err := target.Export(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if roundTripped.Metadata["source_db_path"] != exported.Metadata["db_path"] {
+		t.Fatalf("expected source_db_path to preserve original export path, got %#v", roundTripped.Metadata)
+	}
+
+	if !reflect.DeepEqual(exportWithoutDBPath(roundTripped), exportWithoutDBPath(exported)) {
+		t.Fatalf("snapshot round-trip mismatch:\nwant: %#v\ngot:  %#v", exportWithoutDBPath(exported), exportWithoutDBPath(roundTripped))
+	}
+}
+
 func TestAddDependencyDuplicateAddIsIdempotent(t *testing.T) {
 	ctx := testutil.Context(t)
 	repo := testutil.TempRepo(t)
@@ -1868,4 +1962,19 @@ func countEventsByType(events []issues.Event, eventType string) int {
 	}
 
 	return count
+}
+
+func exportWithoutDBPath(data issues.Export) issues.Export {
+	out := data
+	out.Metadata = make(map[string]any, len(data.Metadata))
+
+	for key, value := range data.Metadata {
+		if key == "db_path" || key == "source_db_path" {
+			continue
+		}
+
+		out.Metadata[key] = value
+	}
+
+	return out
 }
