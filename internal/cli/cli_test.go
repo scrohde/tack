@@ -575,6 +575,42 @@ func TestTUIHelpMentionsGuidedFilters(t *testing.T) {
 	}
 }
 
+func TestUpdateHelpMentionsExamplesAndRules(t *testing.T) {
+	repo := testutil.TempRepo(t)
+	testutil.Chdir(t, repo)
+
+	directOut, err := runCLIBytes(repo, "update", "--help")
+	if err != nil {
+		t.Fatalf("update help failed: %v", err)
+	}
+
+	positionalOut, err := runCLIBytes(repo, "update", "tk-1", "--help")
+	if err != nil {
+		t.Fatalf("update positional help failed: %v", err)
+	}
+
+	if string(directOut) != string(positionalOut) {
+		t.Fatalf("expected update help to match before and after the id\nwithout id:\n%s\nwith id:\n%s", string(directOut), string(positionalOut))
+	}
+
+	rendered := string(directOut)
+	for _, want := range []string{
+		"Update one or more mutable fields on an existing issue. Only flags you pass are changed.",
+		"tack update tk-42 --claim",
+		"--description and --body-file both set the description; use only one of them",
+		"--claim assigns the issue to the resolved actor and moves open issues to in_progress",
+		"valid --type values: epic, task, bug, feature",
+		"valid --status values: open, in_progress, blocked, closed",
+		"valid --priority values: low, medium, high, urgent",
+		"use tack close/tack reopen when you want to record a reason for status changes",
+		"use tack labels add|remove and tack dep add|remove for labels and dependencies",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected update help to contain %q, got %q", want, rendered)
+		}
+	}
+}
+
 func TestCommandsRequireExpectedPositionalArgs(t *testing.T) {
 	repo := testutil.TempRepo(t)
 	testutil.Chdir(t, repo)

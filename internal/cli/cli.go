@@ -529,12 +529,6 @@ func (a *App) runReady(ctx context.Context, args []string) error {
 }
 
 func (a *App) runUpdate(ctx context.Context, args []string) error {
-	leading, remaining, err := a.parseLeadingArgs(args, usageUpdate, 1)
-	if err != nil {
-		return err
-	}
-
-	id := leading[0]
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	title := &optionalString{}
 	description := &optionalString{}
@@ -555,7 +549,18 @@ func (a *App) runUpdate(ctx context.Context, args []string) error {
 	fs.Var(assignee, "assignee", "new assignee; empty clears")
 	fs.Var(parent, "parent", "new parent; empty clears")
 
-	err = a.parseFlags(fs, remaining, usageUpdate)
+	if len(args) > 0 && isHelpToken(args[0]) {
+		return printUpdateUsage(a.stdout, fs)
+	}
+
+	leading, remaining, err := a.parseLeadingArgs(args, usageUpdate, 1)
+	if err != nil {
+		return err
+	}
+
+	id := leading[0]
+
+	err = parseUpdateFlagSet(fs, a.stdout, remaining)
 	if err != nil {
 		return err
 	}
@@ -1557,6 +1562,41 @@ func printUsageWithDefaults(w io.Writer, usage string, defaults func(io.Writer) 
 
 func parseTUIFlagSet(fs *flag.FlagSet, helpOutput io.Writer, args []string) error {
 	return parseFlagSetWithHelp(fs, helpOutput, args, printTUIUsage)
+}
+
+func parseUpdateFlagSet(fs *flag.FlagSet, helpOutput io.Writer, args []string) error {
+	return parseFlagSetWithHelp(fs, helpOutput, args, printUpdateUsage)
+}
+
+func printUpdateUsage(w io.Writer, fs *flag.FlagSet) error {
+	return printUsageWithDefaults(w, usageUpdate, func(out io.Writer) error {
+		_, err := fmt.Fprintln(out, `Update one or more mutable fields on an existing issue. Only flags you pass are changed.
+
+examples:
+  tack update tk-42 --claim
+  tack update tk-42 --status in_progress --priority high
+  tack update tk-42 --description "Clarified scope and acceptance criteria"
+  tack update tk-42 --body-file /tmp/issue.md
+  tack update tk-42 --assignee ""
+  tack update tk-42 --parent ""
+
+notes:
+  at least one change flag is required
+  --description and --body-file both set the description; use only one of them
+  --assignee "" clears the assignee
+  --parent "" clears the parent
+  --claim assigns the issue to the resolved actor and moves open issues to in_progress
+  valid --type values: epic, task, bug, feature
+  valid --status values: open, in_progress, blocked, closed
+  valid --priority values: low, medium, high, urgent
+  use tack close/tack reopen when you want to record a reason for status changes
+  use tack labels add|remove and tack dep add|remove for labels and dependencies`)
+		if err != nil {
+			return err
+		}
+
+		return printFlagDefaults(out, fs)
+	})
 }
 
 func printTUIUsage(w io.Writer, fs *flag.FlagSet) error {
